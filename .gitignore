@@ -1,0 +1,14 @@
+# Terraform
+*.tfvars
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Python
+.venv/
+
+# IDE / Editor
+.idea/
+
+# Logs
+*.log
