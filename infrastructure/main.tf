@@ -102,7 +102,7 @@ resource "azurerm_data_factory" "main" {
 resource "azurerm_databricks_workspace" "main" {
   name                = var.databricks_workspace_name
   resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  location            = "centralus"
   sku                 = "premium"
 
   tags = local.common_tags
