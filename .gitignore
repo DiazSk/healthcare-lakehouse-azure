@@ -7,6 +7,11 @@
 # Python
 .venv/
 
+# Local environment / secrets
+.env
+.env.local
+.env.*.local
+
 # IDE / Editor
 .idea/
 
