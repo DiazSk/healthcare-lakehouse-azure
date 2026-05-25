@@ -1,0 +1,6 @@
+pyspark>=3.5,<4.0
+delta-spark>=3.1,<4.0
+# Optional: only needed for local development to auto-load .env.
+# On Databricks, set the AZURE_* vars as cluster environment variables and
+# this dependency is not required (secrets.py soft-imports it).
+python-dotenv>=1.0,<2.0
