@@ -4,3 +4,15 @@ delta-spark>=3.1,<4.0
 # On Databricks, set the AZURE_* vars as cluster environment variables and
 # this dependency is not required (secrets.py soft-imports it).
 python-dotenv>=1.0,<2.0
+
+# Marimo dashboard (interim viz while Power BI is being built).
+# Reads Gold Delta tables directly from ADLS Gen2 via deltalake — no Databricks
+# SQL warehouse required. See dashboard/README.md.
+marimo>=0.9
+deltalake>=0.18
+duckdb>=1.0,<2.0
+plotly>=5.20,<6.0
+pandas>=2.2,<3.0
+numpy>=1.26,<3.0
+# deltalake>=0.18 made pyarrow an opt-in extra; required for .to_pandas()
+pyarrow>=15.0
