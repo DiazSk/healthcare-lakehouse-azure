@@ -57,10 +57,10 @@ flowchart LR
     GOLD --> MAR
 
     %% ---- Auth ----
-    SP -. OAuth 2.0 .-> LAKE
+    SP -.->|"OAuth 2.0"| LAKE
     KV --- SP
-    DBX -. Databricks secret scope<br/>akv-healthcare-plat .-> KV
-    MAR -. local .env<br/>(rotated SP secret) .-> SP
+    DBX -.->|"secret scope: akv-healthcare-plat"| KV
+    MAR -.->|"local .env (rotated SP secret)"| SP
 
     %% ---- Styles ----
     classDef source  fill:#F1F5F9,stroke:#64748B,color:#0F172A
