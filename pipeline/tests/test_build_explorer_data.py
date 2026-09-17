@@ -82,6 +82,16 @@ def _full_fact():
     )
 
 
+def _dim_provider():
+    # One row per NPI -- the provider-grain counterpart to FACT_COLS above.
+    # npi "1" and "2" are both Cardiology/participating; npi "3" is Podiatry/not.
+    return pa.table({
+        "npi": ["1", "2", "3"],
+        "specialty": ["Cardiology", "Cardiology", "Podiatry"],
+        "is_participating": [True, True, False],
+    })
+
+
 def test_cube_dims_keeps_basket_as_a_grouping_column():
     cube = build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"])
     assert "in_top50_basket" in cube.column_names, (
@@ -112,14 +122,33 @@ def test_tighten_dictionary_encodes_dimensions_and_widens_money():
 
 
 def test_cohorts_counts_distinct_providers_not_rows():
-    cohorts = build_cohorts(_full_fact())
+    cohorts = build_cohorts(_full_fact(), _dim_provider())
     h2 = cohorts.filter(pc.equal(cohorts["grain"], "h2")).to_pylist()
     cardio = [r for r in h2 if r["k1"] == "Cardiology" and r["k2"] == "True"]
     assert len(cardio) == 1
-    # npi "1" appears twice in Cardiology; it must count once.
+    # npi "1" appears twice in the fact table but once in dim_provider;
+    # h2 is provider-grain, so it must count once alongside npi "2".
     assert cardio[0]["n_providers"] == 2
 
 
 def test_cohorts_covers_all_four_panel_grains():
-    grains = set(build_cohorts(_full_fact())["grain"].to_pylist())
+    grains = set(build_cohorts(_full_fact(), _dim_provider())["grain"].to_pylist())
     assert grains == {"h1", "h2", "h4", "h5"}
+
+
+def test_cohorts_h2_is_sourced_from_dim_provider_not_fact():
+    # dim_provider disagrees with the fact table for npi "1": fact-grain says
+    # non-participating (h2 via fact would show 1 for Podiatry/False from npi
+    # "3" alone); make dim_provider disagree on npi "3" too, and confirm h2
+    # follows dim_provider's answer, not the fact table's.
+    dim_provider = pa.table({
+        "npi": ["1", "2", "3"],
+        "specialty": ["Cardiology", "Cardiology", "Podiatry"],
+        "is_participating": [True, True, True],  # npi "3" flipped vs. fact
+    })
+    cohorts = build_cohorts(_full_fact(), dim_provider)
+    h2 = cohorts.filter(pc.equal(cohorts["grain"], "h2")).to_pylist()
+    non_par = [r for r in h2 if r["k2"] == "False"]
+    assert non_par == [], (
+        "h2 must read is_participating from dim_provider, not the fact table"
+    )

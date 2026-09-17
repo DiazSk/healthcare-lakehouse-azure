@@ -49,3 +49,7 @@ writing/
 
 # Subagent-driven-development scratch: ledger, briefs, review packages.
 .superpowers/
+
+# docs/data/*.parquet is deliberately COMMITTED, not ignored: GitHub Pages can
+# only serve files present in the repo. Regenerate with
+# pipeline/build_explorer_data.py. (~54 MB, well inside Pages' 1 GB limit.)
