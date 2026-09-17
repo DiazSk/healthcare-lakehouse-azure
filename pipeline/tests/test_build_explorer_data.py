@@ -126,29 +126,48 @@ def test_cohorts_counts_distinct_providers_not_rows():
     h2 = cohorts.filter(pc.equal(cohorts["grain"], "h2")).to_pylist()
     cardio = [r for r in h2 if r["k1"] == "Cardiology" and r["k2"] == "True"]
     assert len(cardio) == 1
-    # npi "1" appears twice in the fact table but once in dim_provider;
-    # h2 is provider-grain, so it must count once alongside npi "2".
+    # npi "1" appears twice in Cardiology; it must count once.
     assert cardio[0]["n_providers"] == 2
 
 
-def test_cohorts_covers_all_four_panel_grains():
+def test_cohorts_covers_all_five_panel_grains():
     grains = set(build_cohorts(_full_fact(), _dim_provider())["grain"].to_pylist())
-    assert grains == {"h1", "h2", "h4", "h5"}
+    assert grains == {"h1", "h2", "h2p", "h4", "h5"}
 
 
-def test_cohorts_h2_is_sourced_from_dim_provider_not_fact():
-    # dim_provider disagrees with the fact table for npi "1": fact-grain says
-    # non-participating (h2 via fact would show 1 for Podiatry/False from npi
-    # "3" alone); make dim_provider disagree on npi "3" too, and confirm h2
-    # follows dim_provider's answer, not the fact table's.
+def test_cohorts_h2_is_fact_sourced_not_dim_provider():
+    # R7-REVISED: h2 serves the published PER-SPECIALTY provider counts
+    # (docs/data.json nonpar[].n_y/n_n), which the mart computes at fact
+    # grain. Give dim_provider a different is_participating value than the
+    # fact table has for npi "3", and confirm h2 follows the FACT table's
+    # answer, not dim_provider's.
     dim_provider = pa.table({
         "npi": ["1", "2", "3"],
         "specialty": ["Cardiology", "Cardiology", "Podiatry"],
-        "is_participating": [True, True, True],  # npi "3" flipped vs. fact
+        "is_participating": [True, True, True],  # npi "3" flipped vs. fact (False)
     })
     cohorts = build_cohorts(_full_fact(), dim_provider)
     h2 = cohorts.filter(pc.equal(cohorts["grain"], "h2")).to_pylist()
-    non_par = [r for r in h2 if r["k2"] == "False"]
+    non_par = [r for r in h2 if r["k1"] == "Podiatry" and r["k2"] == "False"]
+    assert len(non_par) == 1 and non_par[0]["n_providers"] == 1, (
+        "h2 must read is_participating from the fact table, not dim_provider"
+    )
+
+
+def test_cohorts_h2p_is_sourced_from_dim_provider_not_fact():
+    # R7-REVISED: h2p serves the published KPI-ribbon scalar
+    # (docs/data.json kpi.nonpar_providers), which the mart computes from
+    # dim_provider's per-NPI dedup. Same disagreeing dim_provider as above;
+    # this time assert h2p follows DIM_PROVIDER's answer (nobody
+    # non-participating), not the fact table's.
+    dim_provider = pa.table({
+        "npi": ["1", "2", "3"],
+        "specialty": ["Cardiology", "Cardiology", "Podiatry"],
+        "is_participating": [True, True, True],
+    })
+    cohorts = build_cohorts(_full_fact(), dim_provider)
+    h2p = cohorts.filter(pc.equal(cohorts["grain"], "h2p")).to_pylist()
+    non_par = [r for r in h2p if r["k2"] == "False"]
     assert non_par == [], (
-        "h2 must read is_participating from dim_provider, not the fact table"
+        "h2p must read is_participating from dim_provider, not the fact table"
     )

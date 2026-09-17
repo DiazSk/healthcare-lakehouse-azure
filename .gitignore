@@ -52,4 +52,10 @@ writing/
 
 # docs/data/*.parquet is deliberately COMMITTED, not ignored: GitHub Pages can
 # only serve files present in the repo. Regenerate with
-# pipeline/build_explorer_data.py. (~54 MB, well inside Pages' 1 GB limit.)
+# pipeline/build_explorer_data.py. (63.5 MB, well inside Pages' 1 GB limit.)
+# These are matched by the bare `data/` rule above (line 26), which matches a
+# directory named "data" at any depth -- NOT by *.parquet (verify with
+# `git check-ignore -v docs/data/anything`). Negate both the directory and the
+# files so a future docs/data/manifest.json isn't silently skipped too.
+!/docs/data/
+!/docs/data/*.parquet

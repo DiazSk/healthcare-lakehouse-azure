@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Build the tiered Parquet query surface for the interactive dashboard.
 
-Reads the local Gold Delta tables and emits six Parquet files into docs/data/.
+Reads the local Gold Delta tables and emits seven Parquet files into docs/data/.
 See context/specs/2026-09-17-interactive-dashboard-design.md for the tier design.
 
 Usage:  .venv-local/bin/python pipeline/build_explorer_data.py
@@ -61,6 +61,7 @@ MEASURES = [
 COHORT_GRAINS = {
     "h1": ["state_abrvtn", "ruca_bucket", "in_top50_basket"],
     "h2": ["specialty", "is_participating"],
+    "h2p": ["specialty", "is_participating"],
     "h4": ["hcpcs_cd", "provider_tier"],
     "h5": ["hcpcs_cd", "place_of_srvc"],
 }
@@ -93,26 +94,37 @@ def build_cube(fact: pa.Table, dims: list[str]) -> pa.Table:
 def build_cohorts(fact: pa.Table, dim_provider: pa.Table) -> pa.Table:
     """Long/narrow exact distinct-provider counts: grain, k1, k2, k3, n_providers.
 
-    h1/h4/h5 key on CLAIM attributes (state x rurality, code x tier, code x
-    place) where one provider legitimately appears in several cells, so they
-    are counted from the fact table with count_distinct(npi). h2 keys on
-    `is_participating`, a PROVIDER attribute, so it is counted from
-    dim_provider (one row per NPI) instead -- count_distinct(npi) there is
-    equivalent to COUNT(*), but harmless to keep for one code path.
+    h1, h2, h4 and h5 all key on CLAIM attributes captured at fact grain --
+    state x rurality, specialty x participation, code x tier, code x place --
+    where one provider legitimately appears in several cells, so they are all
+    counted from the fact table with count_distinct(npi). This matches how
+    the Gold hero marts compute these same per-cell provider counts: hero 2's
+    published per-specialty n_y/n_n (docs/data.json `nonpar[]`) come from
+    `non_par_pivot`'s n_providers_Y/N in 04_gold_hero_marts.ipynb cell 5,
+    which counts npi distinctly WITHIN the fact-grain (specialty,
+    is_participating) groups -- i.e. exactly what h2 computes here.
 
-    Ruling R7: the published hero 2 *exposure* figures (docs/data.json) come
-    from the fact-level is_participating flag (04_gold_hero_marts.ipynb cell
-    5), while its published *provider count* (1,130) comes from
-    dim_provider's first(ignorenulls=True) pick per NPI. Those two are at
-    different grains and can legitimately disagree -- ~522 providers have
-    both True and False rows in the fact table, and dim_provider arbitrarily
-    picks one. That inconsistency already ships live (dashboard, README,
-    article draft at 1,130 / 0.096%), so h2 reproduces it deliberately rather
-    than reconciling it to a single grain.
+    h2p is the one exception, added by Ruling R7-REVISED. It exists ONLY to
+    reproduce the KPI ribbon's single scalar (docs/data.json
+    `kpi.nonpar_providers` = 1,130), which the Gold marts compute from
+    dim_provider (one row per NPI) via
+    `F.first("Is_Participating", ignorenulls=True)` -- an order-dependent,
+    provider-level dedup, not a fact-grain count (02_silver_to_gold_dims.ipynb
+    cell 3). ~522 providers have both True and False rows in the fact table:
+    summing h2 across all specialties counts each such provider once per
+    specialty it appears under (1,461 total), while h2p, sourced from
+    dim_provider, matches the mart's single arbitrary pick per NPI (1,130
+    total). Both numbers are genuinely published, at genuinely different
+    grains -- reproducing both, rather than picking one, is the point.
+
+    R7 (the prior ruling) collapsed h2 itself onto dim_provider, which
+    silently broke the per-specialty guardrail cells (e.g. Orthopedic Surgery
+    published 11, dim_provider-sourced h2 gave 6) -- that was wrong and is
+    reverted here.
     """
     rows = []
     for grain, keys in COHORT_GRAINS.items():
-        source = dim_provider if grain == "h2" else fact
+        source = dim_provider if grain == "h2p" else fact
         counted = source.select(keys + ["npi"]).group_by(keys).aggregate(
             [("npi", "count_distinct")]
         )
@@ -201,15 +213,38 @@ def main() -> int:
     prov_dims = ["npi", "specialty", "state_abrvtn", "provider_tier",
                  "is_participating", "is_drug"]
 
+    # Ruling R9: hero 4's markup predicate (Tot_Srvcs >= 25, tier known) is a
+    # ROW-grain filter. No cube keeps row grain -- not even cube_full, whose
+    # finest cells are already 863,230-way aggregates -- so it must be
+    # materialized as its own pre-filtered cube, the same trick as
+    # in_top50_basket, rather than approximated by filtering a cube's summed
+    # cells after the fact (04_gold_hero_marts.ipynb cell 9).
+    h4_mask = pc.and_(
+        pc.greater_equal(fact["Tot_Srvcs"], 25),
+        pc.not_equal(fact["provider_tier"], "Other/Unknown"),
+    )
+    h4_fact = fact.filter(h4_mask)
+
+    # The mart's Lorenz/Gini population additionally excludes providers whose
+    # drug billing nets to zero Medicare payment -- a POST-aggregation filter
+    # on the provider's total, not a row-level one (e.g. NPI 1760441786: 825
+    # drug services, $0.00 paid across all of them; 04_gold_hero_marts.ipynb
+    # cell 7 filters `drug_mdcr_pymt > 0` after grouping to provider grain).
+    drug_providers = build_cube(
+        fact.filter(pc.equal(fact["is_drug"], True)), prov_dims
+    )
+    drug_providers = drug_providers.filter(
+        pc.greater(drug_providers["Tot_Mdcr_Pymt_Amt_sum"], 0)
+    )
+
     artifacts = {
         # Tier 1 -- loaded on "Explore" click.
         "cube_dims": build_cube(fact, dims_no_code),
         "cube_code": build_cube(fact, code_dims),
+        "cube_code_h4": build_cube(h4_fact, code_dims),
         "cohorts": build_cohorts(fact, dim_provider),
         # Tier 2 -- loaded when hero 3 is filtered (its Lorenz needs npi grain).
-        "providers_drug": build_cube(
-            fact.filter(pc.equal(fact["is_drug"], True)), prov_dims
-        ),
+        "providers_drug": drug_providers,
         # Tier 3 -- range-read by the explorer page only.
         "cube_full": build_cube(fact, DIMS),
         "providers": build_cube(fact, prov_dims),
