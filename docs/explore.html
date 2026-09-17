@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explore — Medicare Reimbursement Gap</title>
+<meta name="description" content="Query 9.66M rows of CMS Medicare physician claims in your browser.">
+<!-- Vendored, not CDN-loaded -- see docs/index.html's head comment for why.
+     Zero external requests on first paint, verified with
+     performance.getEntriesByType('resource'). -->
+<script src="js/chart.umd.min.js"></script>
+<link rel="stylesheet" href="css/dash.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <div>
+    <h1>Explore the data</h1>
+    <p class="sub">Every one of the 9,660,252 CMS claim rows, queried in your browser.
+      Nothing is sent to a server — DuckDB runs locally in WebAssembly.</p>
+    <p class="prov"><a href="index.html">← Back to the findings</a></p>
+  </div>
+  <button class="toggle" id="theme" type="button">Switch theme</button>
+</header>
+
+<section class="card">
+  <div class="eyebrow"><span class="n">Pivot</span> Build your own breakdown</div>
+  <div class="filters">
+    <div class="f"><label for="pRows">Rows</label><select id="pRows"></select></div>
+    <div class="f"><label for="pCols">Columns</label><select id="pCols"></select></div>
+    <div class="f"><label for="pMeasure">Measure</label><select id="pMeasure"></select></div>
+    <div class="f"><label for="pFilterDim">Filter</label><select id="pFilterDim"></select></div>
+    <div class="f"><label for="pFilterVal">is</label><select id="pFilterVal"></select></div>
+    <div class="f"><label>&nbsp;</label><button class="toggle" id="pRun" type="button">Run</button></div>
+    <p class="hint" id="pStatus">Loading the query engine…</p>
+  </div>
+  <div class="chartbox tall"><canvas id="pChart"></canvas></div>
+  <div class="tblwrap"><table id="pTable"></table></div>
+  <p class="read">Counts shown are cube rows at the selected grain, not distinct providers —
+    arbitrary grains cannot be precomputed. Load the provider table for exact provider counts.</p>
+</section>
+
+</div>
+<script src="js/format.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/explore.js"></script>
+</body>
+</html>
