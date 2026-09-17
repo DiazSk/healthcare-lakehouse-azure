@@ -243,15 +243,32 @@ E.onProgress(({ phase, loaded, total }) => {
 /* The single source seam. Every render path goes through here: rewiring only
    renderAll() would leave the three filter handlers calling viewFromPayload()
    directly, so live mode would silently repaint static numbers the moment
-   anyone touched a select — while the toggle still claimed to be live. */
+   anyone touched a select — while the toggle still claimed to be live.
+
+   Each call site paints a different, narrow set of panels, so a superseded
+   request must give up its stale VIEW but keep its PAINT: the newer request's
+   fresher view has to satisfy every panel an older one was going to repaint.
+   Dropping both left hero 1 showing the previous cohort under a changed State
+   filter — no error, no visual cue — because only the superseded request would
+   have repainted it. */
 let _viewSeq = 0;
+let _pending = [];
 async function withView(paint) {
+  _pending.push(paint);
   const mine = ++_viewSeq;
-  const v = L.isEnabled() ? await L.viewFromQueries(F) : viewFromPayload();
-  // Two selects changed in quick succession: drop the older answer rather than
-  // painting it over the newer one.
+  let v;
+  try {
+    v = L.isEnabled() ? await L.viewFromQueries(F) : viewFromPayload();
+  } catch (err) {
+    // Nothing awaits these handlers, so an escaping rejection becomes an
+    // unhandledrejection. The paints stay queued for the next request.
+    console.warn(err);
+    return;
+  }
   if (mine !== _viewSeq) return;
-  paint(v);
+  const paints = _pending;
+  _pending = [];
+  for (const p of paints) p(v);
 }
 
 /* Badge the cohort the filter actually selects. With no specialty filter the

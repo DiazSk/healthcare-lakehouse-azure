@@ -2,21 +2,28 @@
 
    Every query below replicates its Gold mart's predicates exactly. Dropping one
    yields plausible-looking numbers that disagree with the validated payload, so
-   treat pipeline/verify_explorer_parity.py as the spec for these WHERE clauses.
+   treat pipeline/verify_explorer_parity.py as the spec for these WHERE clauses,
+   and docs/js/live.test.js as the tripwire that notices when one goes missing.
 
-   Two of those predicates are not WHERE clauses at all:
+   Three of those predicates are not WHERE clauses at all:
    - hero 4 reads cube_code_h4, which is pre-filtered at ROW grain to
      Tot_Srvcs >= 25 AND provider_tier <> 'Other/Unknown'. A post-aggregation
      HAVING over summed cells is a different filter and does not reproduce it.
    - hero 2's patient exposure is BENEFICIARY-weighted (bw_sbmtd_sum /
      bw_pymt_sum), not service-weighted. Using Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt
      gives $260.60 for Dermatology against a published $184.68 -- 41% off and
-     still plausible. */
+     still plausible.
+   - hero 2's cohort counts come from cohorts grain 'h2' (fact grain), not 'h2p'
+     (provider grain), which gives Orthopedic Surgery 6 instead of 11 and so
+     flips its guardrail badge from "thin" to "very-thin". */
 (function (root) {
   "use strict";
 
-  const E = root.MD.engine;
-  const G = root.MD.guardrails;
+  // Read the sibling modules through a getter rather than at load time, so this
+  // file is loadable under node with both stubbed (docs/js/live.test.js) and so
+  // script order is not a landmine.
+  const E = () => root.MD.engine;
+  const G = () => root.MD.guardrails;
   let _enabled = false;
 
   const isEnabled = () => _enabled;
@@ -26,41 +33,63 @@
   // or live mode prints 0.9060147372593845.
   const round = (v, d) => (Number.isFinite(v) ? Number(v.toFixed(d)) : null);
 
-  function where(filters, opts = {}) {
-    const c = [];
-    if (filters.state !== "all") c.push(`state_abrvtn = ${q(filters.state)}`);
-    if (filters.ruca !== "all") c.push(`ruca_bucket = ${q(filters.ruca)}`);
-    if (filters.spec !== "all") c.push(`specialty = ${q(filters.spec)}`);
-    if (opts.basket) c.push("in_top50_basket");
+  /* Each panel gets ONLY the predicates its chip discloses. Scoping every query
+     to all three filters looks harmless and is not: hero 2's cohort counts come
+     from `cohorts` grain 'h2', which is specialty x participation with no state
+     or RUCA dimension, so a state-filtered exposure ratio carried a NATIONAL
+     n_n -- 56 for NY x Dermatology, which reads as reliable, hides the badge and
+     leaves a 2-cell cohort presented at full opacity as a finding. There is no
+     state x specialty cohort grain to fix that with, which is the same reason
+     R24 refused to wire badgeH1. */
+  const COLUMN = { state: "state_abrvtn", ruca: "ruca_bucket", spec: "specialty" };
+  function where(filters, dims, opts) {
+    const c = dims
+      .filter((d) => filters[d] !== "all")
+      .map((d) => `${COLUMN[d]} = ${q(filters[d])}`);
+    if (opts && opts.basket) c.push("in_top50_basket");
     return c.length ? `WHERE ${c.join(" AND ")}` : "";
   }
 
+  /* Session cache for the queries that take no filters at all. Heroes 4 and 5
+     and the J-code bar read cube_code / cube_code_h4, which carry no state,
+     ruca or specialty column; the participation scalars are national by design.
+     Promise-valued so two overlapping first calls share one query, and evicted
+     on failure so a transient error is retried. */
+  const _session = new Map();
+  function once(key, run) {
+    if (!_session.has(key)) {
+      _session.set(key, run().catch((err) => { _session.delete(key); throw err; }));
+    }
+    return _session.get(key);
+  }
+
   async function viewFromQueries(filters) {
-    await E.loadTier(1);
+    await E().loadTier(1);
 
     // Hero 1 -- fixed basket, paid minus standardized. Both predicates required.
-    const geo = await E.query(`
+    // Scope: State + RUCA, per its chip. cube_dims has a specialty column, so
+    // adding `spec` here silently specialty-filters a panel labelled as not
+    // responding to specialty.
+    const geo = await E().query(`
       SELECT state_abrvtn AS state, ruca_bucket AS ruca,
              SUM(Tot_Mdcr_Pymt_Amt_sum) - SUM(Tot_Mdcr_Stdzd_Amt_sum) AS premium,
              SUM(Tot_Mdcr_Pymt_Amt_sum) AS pymt,
              SUM(Tot_Benes_sum) AS benes, SUM(Tot_Srvcs_sum) AS svcs
-      FROM cube_dims ${where(filters, { basket: true })}
+      FROM cube_dims ${where(filters, ["state", "ruca"], { basket: true })}
       GROUP BY 1, 2`);
     geo.forEach((r) => {
       r.prem_per_bene = r.benes > 0 ? r.premium / r.benes : null;
     });
 
-    // Hero 2 -- beneficiary-weighted exposure, pivoted on participation. The
-    // cohort counts come from grain 'h2' (fact grain), which is what the
-    // published n_n values and therefore the guardrail badge are built on;
-    // 'h2p' is provider grain and gives 6 for Orthopedic Surgery, not 11.
-    const nonpar = await E.query(`
+    // Hero 2 -- beneficiary-weighted exposure, pivoted on participation.
+    // Scope: Specialty only, per its chip and its cohort grain.
+    const nonpar = await E().query(`
       WITH per AS (
         SELECT specialty, is_participating,
                SUM(bw_sbmtd_sum)  AS sbmtd,
                SUM(bw_pymt_sum)   AS pymt,
                SUM(Tot_Benes_sum) AS benes
-        FROM cube_dims ${where(filters)} GROUP BY 1, 2
+        FROM cube_dims ${where(filters, ["spec"])} GROUP BY 1, 2
       ), exposure AS (
         SELECT specialty, is_participating,
                (sbmtd - pymt) / NULLIF(benes, 0) AS exp_per_bene
@@ -84,7 +113,7 @@
       // compared specialties and 99 negative against a published 36 and 31.
       r.premium_pct = Number.isFinite(r.exp_y) && Number.isFinite(r.exp_n) && r.exp_y > 0
         ? (r.exp_n - r.exp_y) / r.exp_y : null;
-      r.measurable = (r.n_n || 0) >= G.RELIABLE;
+      r.measurable = (r.n_n || 0) >= G().RELIABLE;
     });
     // "Specialties where both groups appear" IS this filtered set, so the stats
     // below are counted over it, not over the 104 rows the pivot returns. The
@@ -92,46 +121,26 @@
     const compared = nonpar.filter((r) => Number.isFinite(r.premium_pct))
                            .sort((a, b) => b.premium_pct - a.premium_pct);
 
-    // Hero 4 -- cube_code_h4 already carries Tot_Srvcs >= 25 and the known-tier
-    // restriction at row grain, so this query adds no predicates of its own.
-    const credRows = await E.query(`
-      SELECT hcpcs_cd AS hcpcs, provider_tier,
-             SUM(Tot_Sbmtd_Chrg_sum) / NULLIF(SUM(Tot_Mdcr_Alowd_Amt_sum), 0) AS markup,
-             SUM(Tot_Srvcs_sum) AS svcs
-      FROM cube_code_h4
-      GROUP BY 1, 2`);
-
-    // Hero 5 -- >= 1000 services on BOTH sides, per the mart. `desc` is empty
-    // because no tiered cube carries HCPCS descriptions, and hero 5's tooltips
-    // call .slice() on it.
-    const site = await E.query(`
-      WITH per_code AS (
-        SELECT hcpcs_cd AS hcpcs,
-               SUM(CASE WHEN place_of_srvc='F' THEN Tot_Mdcr_Pymt_Amt_sum END) AS f_tot,
-               SUM(CASE WHEN place_of_srvc='F' THEN Tot_Srvcs_sum END)         AS f_svcs,
-               SUM(CASE WHEN place_of_srvc='O' THEN Tot_Mdcr_Pymt_Amt_sum END) AS o_tot,
-               SUM(CASE WHEN place_of_srvc='O' THEN Tot_Srvcs_sum END)         AS o_svcs
-        FROM cube_code GROUP BY 1
-      )
-      SELECT hcpcs, '' AS desc, f_tot / f_svcs AS f_pymt, o_tot / o_svcs AS o_pymt, f_svcs,
-             (f_tot / f_svcs) / NULLIF(o_tot / o_svcs, 0) AS ratio,
-             ((f_tot / f_svcs) - (o_tot / o_svcs)) * f_svcs AS savings
-      FROM per_code WHERE f_svcs >= 1000 AND o_svcs >= 1000`);
-
-    const kpi = (await E.query(`
-      SELECT SUM(Tot_Mdcr_Pymt_Amt_sum) AS total_mdcr_pymt,
-             SUM(Tot_Srvcs_sum) AS total_services
-      FROM cube_dims ${where(filters)}`))[0];
-
+    const credRows = await once("credentials", credentialCells);
+    const site = await once("site", siteCells);
     // Hero 2's reading line quotes the national participation scalars, which are
-    // PROVIDER grain -- the one thing cohorts' 'h2p' exists for. Left unfiltered
-    // on purpose: the sentence is a national claim and reads identically in
-    // static mode, where no filter moves it either.
-    const par = await E.query(`
+    // PROVIDER grain -- the one thing cohorts' 'h2p' exists for. National on
+    // purpose: the sentence is a national claim and reads identically in static
+    // mode, where no filter moves it either.
+    const par = await once("participation", () => E().query(`
       SELECT SUM(CASE WHEN k2 = 'False' THEN n_providers ELSE 0 END) AS nonpar_providers,
              SUM(CASE WHEN k2 = 'True'  THEN n_providers ELSE 0 END) AS par_providers,
              SUM(n_providers)                                        AS n_providers
-      FROM cohorts WHERE grain = 'h2p'`);
+      FROM cohorts WHERE grain = 'h2p'`));
+
+    // Nothing renders these two: renderStatics takes the raw snake_case DATA and
+    // runs once from init(). They exist as the console hook the notes named for
+    // verifying the live KPI against 93,719,556,238.83, so they carry the whole
+    // filter set.
+    const kpi = (await E().query(`
+      SELECT SUM(Tot_Mdcr_Pymt_Amt_sum) AS total_mdcr_pymt,
+             SUM(Tot_Srvcs_sum) AS total_services
+      FROM cube_dims ${where(filters, ["state", "ruca", "spec"])}`))[0];
     Object.assign(kpi, par[0], {
       nonpar_pct: par[0].n_providers > 0
         ? round(par[0].nonpar_providers / par[0].n_providers, 6) : null,
@@ -145,7 +154,7 @@
         positive: compared.filter((r) => r.premium_pct > 0).length,
         negative: compared.filter((r) => r.premium_pct < 0).length,
         measurable: compared.filter((r) => r.measurable).length,
-        min_nonpar_providers: G.RELIABLE,
+        min_nonpar_providers: G().RELIABLE,
       },
       credentials: reshapeCredentials(credRows),
       credentialTiers: ["md", "np", "pa", "spec"],
@@ -170,15 +179,88 @@
     return view;
   }
 
+  /* Hero 4 -- cube_code_h4 already carries Tot_Srvcs >= 25 and the known-tier
+     restriction at row grain, so this query adds no predicates of its own. It
+     does restrict the row SET the way publish_dashboard.py does: the six shared
+     E&M codes plus the 50 largest others by MD/DO service volume. Verified to be
+     the same 56 codes as the static payload's `credentials`. Reading all 4,544
+     codes to render 6 was the largest tier-1 query at 67 ms; this is 185 cells. */
+  const SHARED_E_AND_M = ["99213", "99214", "99203", "99204", "99212", "99215"];
+  const TIER_KEY = {
+    "Physician (MD/DO)": "md", "Nurse Practitioner": "np",
+    "Physician Assistant": "pa", Specialist: "spec",
+  };
+
+  function credentialCells() {
+    const shared = SHARED_E_AND_M.map(q).join(", ");
+    return E().query(`
+      WITH cells AS (
+        SELECT hcpcs_cd AS hcpcs, provider_tier,
+               SUM(Tot_Sbmtd_Chrg_sum) / NULLIF(SUM(Tot_Mdcr_Alowd_Amt_sum), 0) AS markup,
+               SUM(Tot_Srvcs_sum) AS svcs
+        FROM cube_code_h4
+        GROUP BY 1, 2
+      ), top_rest AS (
+        -- publish_dashboard.py ranks the non-shared codes by Physician_MD_DO_svcs,
+        -- not by services summed across tiers; ranking on the sum picks a
+        -- different 50.
+        SELECT hcpcs FROM cells
+        WHERE provider_tier = 'Physician (MD/DO)' AND hcpcs NOT IN (${shared})
+        ORDER BY svcs DESC LIMIT 50
+      )
+      SELECT hcpcs, provider_tier, markup FROM cells
+      WHERE hcpcs IN (${shared}) OR hcpcs IN (SELECT hcpcs FROM top_rest)`);
+  }
+
+  /* Hero 5 -- >= 1000 services on BOTH sides, per the mart. `desc` is empty
+     because no tiered cube carries HCPCS descriptions, and hero 5's tooltips
+     call .slice() on it. */
+  function siteCells() {
+    return E().query(`
+      WITH per_code AS (
+        SELECT hcpcs_cd AS hcpcs,
+               SUM(CASE WHEN place_of_srvc='F' THEN Tot_Mdcr_Pymt_Amt_sum END) AS f_tot,
+               SUM(CASE WHEN place_of_srvc='F' THEN Tot_Srvcs_sum END)         AS f_svcs,
+               SUM(CASE WHEN place_of_srvc='O' THEN Tot_Mdcr_Pymt_Amt_sum END) AS o_tot,
+               SUM(CASE WHEN place_of_srvc='O' THEN Tot_Srvcs_sum END)         AS o_svcs
+        FROM cube_code GROUP BY 1
+      )
+      SELECT hcpcs, '' AS desc, f_tot / f_svcs AS f_pymt, o_tot / o_svcs AS o_pymt, f_svcs,
+             (f_tot / f_svcs) / NULLIF(o_tot / o_svcs, 0) AS ratio,
+             ((f_tot / f_svcs) - (o_tot / o_svcs)) * f_svcs AS savings
+      FROM per_code WHERE f_svcs >= 1000 AND o_svcs >= 1000`);
+  }
+
   /* Hero 3's Lorenz curve and the provider table are the only things needing npi
      grain, so tier 2 (4.78 MB) loads here rather than with tier 1. Mutates `view`
-     in place so the returned shape always matches viewFromPayload's. */
+     in place so the returned shape always matches viewFromPayload's.
+
+     Memoized on state x specialty, the only two filters providers_drug carries:
+     a RUCA-only change would otherwise redo ~170 ms of provider work it cannot
+     affect. Only the newest pair is kept -- the payload is small but a per-pair
+     map would be unbounded (61 states x 37 specialties). */
+  let _provKey = null;
+  let _provPromise = null;
+
   async function addProviderGrain(view, filters) {
-    await E.loadTier(2);
-    const provFilter = [];
-    if (filters.state !== "all") provFilter.push(`state_abrvtn = ${q(filters.state)}`);
-    if (filters.spec !== "all") provFilter.push(`specialty = ${q(filters.spec)}`);
-    const pw = provFilter.length ? `WHERE ${provFilter.join(" AND ")}` : "";
+    const key = `${filters.state}|${filters.spec}`;
+    if (key !== _provKey) {
+      _provKey = key;
+      _provPromise = providerGrain(filters).catch((err) => {
+        if (_provKey === key) { _provKey = null; _provPromise = null; }
+        throw err;
+      });
+    }
+    const g = await _provPromise;
+    view.lorenz = g.lorenz;
+    view.providers = g.providers;
+    view.jcodeTop = g.jcodeTop;
+    Object.assign(view.kpi, g.kpi);
+  }
+
+  async function providerGrain(filters) {
+    await E().loadTier(2);
+    const pw = where(filters, ["state", "spec"]);
 
     /* The curve, its Gini and the two top-share scalars all come out of one
        ordered scan, downsampled to ~200 points IN SQL. Pulling all 221,364
@@ -186,7 +268,7 @@
        this function first did -- measured 2,418 ms per render, essentially all of
        it Arrow-to-JS object allocation. This is ~150 ms and returns the identical
        Gini to 14 significant figures. */
-    const curve = await E.query(`
+    const curve = await E().query(`
       WITH p AS (
         SELECT npi, SUM(Tot_Mdcr_Pymt_Amt_sum) AS drug_pymt
         FROM providers_drug ${pw}
@@ -217,38 +299,37 @@
       ORDER BY rn`);
 
     const s = curve[0] || {};
-    view.lorenz = curve.map((r) => ({ x: r.x, y: r.y }));
-    view.kpi.n_drug_providers = s.n_drug_providers || 0;
-    // A state x specialty with no drug billers at all is reachable (AA x
-    // Dermatology). Gini is undefined there, and the chart title interpolates
-    // this value raw -- "Gini —" is the codebase's convention for a missing
-    // scalar, "Gini null" is a bug report.
-    view.kpi.gini = round(s.gini, 3) ?? "—";
-    view.kpi.lorenz_top1 = round(s.lorenz_top1, 5);
-    view.kpi.lorenz_top10 = round(s.lorenz_top10, 5);
-
-    view.providers = await E.query(`
-      SELECT npi, specialty, state_abrvtn AS state,
-             SUM(Tot_Mdcr_Pymt_Amt_sum) AS drug_pymt
-      FROM providers_drug ${pw}
-      GROUP BY 1, 2, 3 HAVING SUM(Tot_Mdcr_Pymt_Amt_sum) > 0
-      ORDER BY drug_pymt DESC LIMIT 200`);
-
-    // Hero 3's companion bar: largest drug codes by payment, from cube_code
-    // (tier 1) since it needs no npi grain.
-    view.jcodeTop = await E.query(`
-      SELECT hcpcs_cd AS hcpcs, '' AS desc,
-             SUM(Tot_Mdcr_Pymt_Amt_sum) AS pymt,
-             SUM(Tot_Srvcs_sum) AS providers
-      FROM cube_code WHERE is_drug
-      GROUP BY 1 ORDER BY pymt DESC LIMIT 25`);
+    return {
+      lorenz: curve.map((r) => ({ x: r.x, y: r.y })),
+      kpi: {
+        n_drug_providers: s.n_drug_providers || 0,
+        // A state x specialty with no drug billers at all is reachable (AA x
+        // Dermatology). Gini is undefined there, and the chart title
+        // interpolates this value raw -- "Gini —" is the codebase's convention
+        // for a missing scalar, "Gini null" is a bug report.
+        gini: round(s.gini, 3) ?? "—",
+        lorenz_top1: round(s.lorenz_top1, 5),
+        lorenz_top10: round(s.lorenz_top10, 5),
+      },
+      providers: await E().query(`
+        SELECT npi, specialty, state_abrvtn AS state,
+               SUM(Tot_Mdcr_Pymt_Amt_sum) AS drug_pymt
+        FROM providers_drug ${pw}
+        GROUP BY 1, 2, 3 HAVING SUM(Tot_Mdcr_Pymt_Amt_sum) > 0
+        ORDER BY drug_pymt DESC LIMIT 200`),
+      // Hero 3's companion bar: largest drug codes by payment, from cube_code
+      // (tier 1) since it needs no npi grain -- and no filters, so it is shared
+      // across every cohort. That is why hero 3's chip overstates slightly: the
+      // Lorenz curve responds to State and Specialty, this bar cannot, because
+      // cube_code has neither column.
+      jcodeTop: await once("jcode", () => E().query(`
+        SELECT hcpcs_cd AS hcpcs, '' AS desc,
+               SUM(Tot_Mdcr_Pymt_Amt_sum) AS pymt,
+               SUM(Tot_Srvcs_sum) AS providers
+        FROM cube_code WHERE is_drug
+        GROUP BY 1 ORDER BY pymt DESC LIMIT 25`)),
+    };
   }
-
-  const SHARED_E_AND_M = ["99213", "99214", "99203", "99204", "99212", "99215"];
-  const TIER_KEY = {
-    "Physician (MD/DO)": "md", "Nurse Practitioner": "np",
-    "Physician Assistant": "pa", Specialist: "spec",
-  };
 
   function reshapeCredentials(rows) {
     const byCode = new Map();
@@ -258,12 +339,10 @@
       if (!byCode.has(r.hcpcs)) {
         byCode.set(r.hcpcs, {
           hcpcs: r.hcpcs, desc: "",
-          shared: SHARED_E_AND_M.includes(r.hcpcs), _svcs: 0,
+          shared: SHARED_E_AND_M.includes(r.hcpcs),
         });
       }
-      const row = byCode.get(r.hcpcs);
-      row[k] = r.markup;
-      row._svcs += r.svcs || 0;
+      byCode.get(r.hcpcs)[k] = r.markup;
     }
     return [...byCode.values()];
   }
@@ -278,4 +357,4 @@
 
   root.MD = root.MD || {};
   root.MD.live = { enable, disable, isEnabled, viewFromQueries };
-})(window);
+})(typeof window !== "undefined" ? window : globalThis);

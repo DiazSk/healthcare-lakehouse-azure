@@ -137,21 +137,58 @@
     }
   }
 
+  /* Arrow -> plain objects. Three numeric shapes are narrowed here so no caller
+     has to know about any of them:
+
+     - BigInt (a BIGINT column) breaks JSON and Chart.js.
+     - SUM() over a BIGINT widens to HUGEINT, which Arrow returns as a Decimal:
+       a Uint32Array subclass holding 128-bit limbs. Its toString is right, but
+       its arithmetic and toLocaleString are not -- measured on
+       SUM(Tot_Benes_sum), `0 + benes` string-concatenates to "029586728" and
+       count(benes) prints "824,724,417,0,0,0", which poisoned hero 1's
+       per-beneficiary colour scale and every cohort count in a tooltip.
+     - A DECIMAL(p,s) column carries a scale Arrow does not apply, so reading the
+       limbs alone turns 123.45 into 12345 and a bare SQL `1.5` into 15. Nothing
+       in the seven committed artifacts is a scaled decimal, but Task 10 adds a
+       visitor-writable SQL box, which makes both that and values past 2^53
+       reachable by design -- hence the scale comes off the schema rather than
+       being assumed to be zero.
+
+     Deliberately conservative in two directions: a typed array on a field with
+     no scale (BLOB, Binary) passes through untouched rather than becoming NaN,
+     and an integer past 2^53 degrades to the nearest double instead of throwing,
+     because Arrow's own conversion throws there and that would abort a whole
+     view into the toggle's "unavailable" path. */
+  function decimalToNumber(limbs, scale) {
+    let n = 0n;
+    for (let i = limbs.length - 1; i >= 0; i -= 1) {
+      n = (n << 32n) | BigInt(limbs[i] >>> 0);
+    }
+    // Two's complement: the high bit of the top limb is the sign.
+    if (limbs[limbs.length - 1] & 0x80000000) n -= 1n << BigInt(32 * limbs.length);
+    return scale > 0 ? Number(n) / 10 ** scale : Number(n);
+  }
+
+  function narrowerFor(field) {
+    const type = field && field.type;
+    const scale = type && typeof type.scale === "number" ? type.scale : null;
+    if (scale === null) return (v) => (typeof v === "bigint" ? Number(v) : v);
+    return (v) => {
+      if (ArrayBuffer.isView(v)) return decimalToNumber(v, scale);
+      if (typeof v === "bigint") return Number(v);
+      return v;
+    };
+  }
+
   async function query(sql) {
     if (_status !== "ready") await boot();
     const result = await _conn.query(sql);
-    // Arrow -> plain objects. Two integer shapes have to be narrowed here:
-    // BigInt breaks JSON and Chart.js, and SUM() over a BIGINT column widens to
-    // HUGEINT, which Arrow hands back as a Decimal -- a Uint32Array subclass
-    // whose toString is correct but whose arithmetic and toLocaleString are not
-    // (`0 + benes` string-concatenates; count(benes) prints "824,724,417,0,0,0").
-    // Measured against SUM(Tot_Benes_sum): it poisons hero 1's per-beneficiary
-    // scale and every cohort count that reaches a tooltip.
+    const fields = result.schema.fields;
+    const narrow = fields.map(narrowerFor);
     return result.toArray().map((row) => {
+      const json = row.toJSON();
       const out = {};
-      for (const [k, v] of Object.entries(row.toJSON())) {
-        out[k] = typeof v === "bigint" || ArrayBuffer.isView(v) ? Number(v) : v;
-      }
+      fields.forEach((f, i) => { out[f.name] = narrow[i](json[f.name]); });
       return out;
     });
   }
