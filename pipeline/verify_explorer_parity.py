@@ -31,17 +31,20 @@ def check(label, got, want, tol=0.01):
 
 # Finding 5: a green run against STALE artifacts is worse than no run at all --
 # editing the builder and forgetting to re-execute it must not silently pass.
-builder_mtime = BUILDER.stat().st_mtime
-stale = [
-    p.name for p in sorted(DATA.glob("*.parquet"))
-    if p.stat().st_mtime < builder_mtime
-]
-if stale:
-    print(f"  FAIL  freshness: {stale} older than {BUILDER.name} -- re-run "
-          f"`.venv-local/bin/python pipeline/build_explorer_data.py`")
+#
+# Content-hashed, not mtime-compared. The mtime version failed on artifacts that
+# were perfectly current the moment the branch was merged, because git rewrites
+# every tracked file's mtime in one burst and wrote docs/ before pipeline/,
+# leaving all seven Parquet files 6-170 milliseconds "older" than the builder.
+# freshness_verdict lives beside write_manifest in the builder so the two cannot
+# drift out of agreement about the manifest's format.
+sys.path.insert(0, str(REPO / "pipeline"))
+from build_explorer_data import freshness_verdict  # noqa: E402
+
+fresh_ok, fresh_msg = freshness_verdict(DATA, BUILDER)
+print(f"  {'PASS' if fresh_ok else 'FAIL'}  freshness: {fresh_msg}")
+if not fresh_ok:
     failures.append("freshness")
-else:
-    print(f"  PASS  freshness: all docs/data/*.parquet newer than {BUILDER.name}")
 
 con = duckdb.connect()
 # Finding 4: register every file the builder ships, not just the four the
@@ -191,6 +194,10 @@ check(
 print()
 if failures:
     print(f"PARITY FAILED: {failures}")
-    print("A mart predicate was missed -- see the spec's Predicate parity table.")
+    # A freshness failure is stale artifacts, not predicate drift, and its own
+    # message already says what to do. Diagnosing it as a missed predicate sent
+    # the last reader looking in the wrong place.
+    if [f for f in failures if f != "freshness"]:
+        print("A mart predicate was missed -- see the spec's Predicate parity table.")
     sys.exit(1)
 print("PARITY PASSED -- cubes reproduce the validated static payload.")

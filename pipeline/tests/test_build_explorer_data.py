@@ -5,6 +5,7 @@ so they are fast and need no pipeline run. Parity against the real data is a
 separate verification step in Task 3.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -245,3 +246,100 @@ def test_cohorts_h2p_is_sourced_from_dim_provider_not_fact():
     assert non_par == [], (
         "h2p must read is_participating from dim_provider, not the fact table"
     )
+
+
+# ── build manifest / freshness gate ───────────────────────────────────────────
+#
+# The gate this replaces compared mtimes, and the merge to main made it fire on
+# artifacts that were perfectly current: git rewrote every tracked file's mtime
+# in one 0.17-second burst, writing docs/ before pipeline/, so all seven Parquet
+# files landed 6-170 MILLISECONDS "older" than the builder while 9 of 9 value
+# checks passed. These tests cover the replacement without a 95-second build.
+
+from build_explorer_data import (  # noqa: E402
+    MANIFEST_NAME, builder_sha256, freshness_verdict, write_manifest,
+)
+
+
+def _fake_build(tmp_path, artifacts=("cube_dims", "cohorts"), builder_src=b"# builder\n"):
+    """A throwaway data dir plus builder file, as a real build would leave them."""
+    builder = tmp_path / "build_explorer_data.py"
+    builder.write_bytes(builder_src)
+    data = tmp_path / "data"
+    data.mkdir()
+    for name in artifacts:
+        (data / f"{name}.parquet").write_bytes(b"parquet")
+    return builder, data
+
+
+def test_builder_sha256_tracks_content_not_timestamps(tmp_path):
+    builder, _ = _fake_build(tmp_path)
+    first = builder_sha256(builder)
+    os.utime(builder, (0, 0))          # 1970; the old gate's whole input
+    assert builder_sha256(builder) == first
+    builder.write_bytes(b"# builder\nBASKET_SIZE = 40\n")
+    assert builder_sha256(builder) != first
+
+
+def test_freshness_passes_when_the_builder_is_unchanged(tmp_path, monkeypatch):
+    builder, data = _fake_build(tmp_path)
+    monkeypatch.setattr("build_explorer_data.builder_sha256",
+                        lambda p=None: builder_sha256(builder))
+    write_manifest(data, ["cube_dims", "cohorts"], "2026-09-17")
+    ok, msg = freshness_verdict(data, builder)
+    assert ok, msg
+    assert "unchanged" in msg
+
+
+def test_freshness_passes_even_when_the_parquet_is_older_than_the_builder(tmp_path,
+                                                                          monkeypatch):
+    # The exact shape that failed on the merge: artifacts older than the builder
+    # by a hair, but built by it.
+    builder, data = _fake_build(tmp_path)
+    monkeypatch.setattr("build_explorer_data.builder_sha256",
+                        lambda p=None: builder_sha256(builder))
+    write_manifest(data, ["cube_dims", "cohorts"], None)
+    for f in data.iterdir():
+        os.utime(f, (1, 1))
+    os.utime(builder, (10_000, 10_000))
+    ok, _ = freshness_verdict(data, builder)
+    assert ok, "a timestamp must not fail a content-fresh build"
+
+
+def test_freshness_fails_when_the_builder_changed_after_the_build(tmp_path, monkeypatch):
+    builder, data = _fake_build(tmp_path)
+    monkeypatch.setattr("build_explorer_data.builder_sha256",
+                        lambda p=None: builder_sha256(builder))
+    write_manifest(data, ["cube_dims", "cohorts"], None)
+    builder.write_bytes(b"# builder\nBASKET_SIZE = 40\n")   # the real hazard
+    ok, msg = freshness_verdict(data, builder)
+    assert not ok
+    assert "has changed since these artifacts were built" in msg
+    assert "re-run" in msg, "the message must say what to do, not just what is wrong"
+
+
+def test_freshness_fails_on_a_missing_or_corrupt_manifest(tmp_path):
+    builder, data = _fake_build(tmp_path)
+    ok, msg = freshness_verdict(data, builder)
+    assert not ok and MANIFEST_NAME in msg and "re-run" in msg
+    (data / MANIFEST_NAME).write_text("{not json")
+    ok, msg = freshness_verdict(data, builder)
+    assert not ok and "not valid JSON" in msg and "re-run" in msg
+
+
+def test_freshness_fails_when_a_listed_artifact_is_absent(tmp_path, monkeypatch):
+    builder, data = _fake_build(tmp_path)
+    monkeypatch.setattr("build_explorer_data.builder_sha256",
+                        lambda p=None: builder_sha256(builder))
+    write_manifest(data, ["cube_dims", "cohorts", "providers_drug"], None)
+    ok, msg = freshness_verdict(data, builder)
+    assert not ok
+    assert "providers_drug" in msg and "re-run" in msg
+
+
+def test_the_committed_manifest_matches_the_committed_builder():
+    """The real artifacts, not a fixture: this is what the gate asserts in CI."""
+    repo = Path(__file__).resolve().parents[2]
+    ok, msg = freshness_verdict(repo / "docs" / "data",
+                                repo / "pipeline" / "build_explorer_data.py")
+    assert ok, msg

@@ -77,6 +77,16 @@ test("hero 1 at a single cohort reports the sign of a negative premium", () => {
   assert.doesNotMatch(s, /-\$39\.8M (more|less)/);
 });
 
+test("hero 1 at a single negative cohort carries the sign once, not twice", () => {
+  // AA + Large rural on the real cubes: premium -$4,502.93, perBene -$1.29.
+  // "bills $4.5K less … -$1.29 per beneficiary-proxy" is a double negative --
+  // the word already carries the direction.
+  const s = R.hero1Read([{ state: "AA", premium: -4502.93, perBene: -1.29 }]);
+  assert.match(s, /AA bills \$4\.5K less .* — \$1\.29 per beneficiary-proxy/);
+  // No signed currency anywhere in the sentence.
+  assert.doesNotMatch(s, /-\$/);
+});
+
 test("hero 1 at a single cohort omits a missing per-beneficiary figure", () => {
   const s = R.hero1Read([{ state: "MP", premium: 1000, perBene: null }]);
   assert.doesNotMatch(s, /per beneficiary-proxy/);
@@ -92,7 +102,11 @@ test("hero 1's ramp chip degrades at one and zero cohorts", () => {
   assert.equal(R.hero1Ramp([], 1, Infinity, -Infinity),
     "no mapped state matches this filter");
   assert.equal(R.hero1Ramp([{}], 25.9, 25.9, 25.9),
-    "single cohort · $25.90 per beneficiary-proxy");
+    "single cohort · $25.90 above standard per beneficiary-proxy");
+  // The chip carries no "more"/"less", so at a negative cohort it names the
+  // direction in the legend's own words instead of relying on a minus sign.
+  assert.equal(R.hero1Ramp([{}], 8.95, -8.95, -8.95),
+    "single cohort · $8.95 below standard per beneficiary-proxy");
   // The national form is unchanged.
   assert.equal(R.hero1Ramp([{}, {}], 10.65, -6.89, 24.07),
     "scale ±$10.65 per beneficiary-proxy · actual range -$6.89 to $24.07 "

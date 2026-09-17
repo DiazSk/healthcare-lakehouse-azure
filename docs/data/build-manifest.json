@@ -1,0 +1,14 @@
+{
+  "builder": "pipeline/build_explorer_data.py",
+  "builder_sha256": "48385a30f29cdd76456956662a5bdc3e0756f3f488ae97dbe375cfd9f70bf70f",
+  "artifacts": [
+    "cohorts",
+    "cube_code",
+    "cube_code_h4",
+    "cube_dims",
+    "cube_full",
+    "providers",
+    "providers_drug"
+  ],
+  "payload_generated": "2026-09-17"
+}

@@ -154,8 +154,11 @@
       return `Reading it: this filter selects a single cohort. ${one.state} bills `
         + `${money(Math.abs(one.premium))} ${one.premium >= 0 ? "more" : "less"} than the `
         + `geographically standardized amount for the same work`
+        // Math.abs on BOTH figures: "more"/"less" above already carries the
+        // direction, so a signed per-beneficiary value reads as a double
+        // negative ("bills $4.5K less … -$1.29 per beneficiary-proxy").
         + `${Number.isFinite(one.perBene)
-            ? ` — ${money(one.perBene, 2)} per beneficiary-proxy` : ""}. `
+            ? ` — ${money(Math.abs(one.perBene), 2)} per beneficiary-proxy` : ""}. `
         + `Comparing states needs more than one selected, so there is no spread to rank. `
         + POLICY;
     }
@@ -172,7 +175,11 @@
     // which money() renders as an em dash rather than "$Infinity".
     if (!drawn.length) return "no mapped state matches this filter";
     if (drawn.length === 1) {
-      return `single cohort · ${money(lo, 2)} per beneficiary-proxy`;
+      // Unlike h1read this chip has no "more"/"less" to carry the direction, so
+      // it says it in the legend's own words rather than leaning on a minus sign
+      // ("single cohort · -$8.95 per beneficiary-proxy" was the OK/Unknown case).
+      return `single cohort · ${money(Math.abs(lo), 2)} `
+        + `${lo < 0 ? "below" : "above"} standard per beneficiary-proxy`;
     }
     return `scale ±${money(bound, 2)} per beneficiary-proxy · actual range `
       + `${money(lo, 2)} to ${money(hi, 2)} (beyond the scale is clamped)`;

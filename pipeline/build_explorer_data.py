@@ -31,11 +31,85 @@ def resolve_top50_basket(table: pa.Table) -> set[str]:
     return set(ranked.slice(0, BASKET_SIZE)["hcpcs_cd"].to_pylist())
 
 
+import hashlib
+import json
 import os
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO / "docs" / "data"
+
+# ── build manifest (format owned here, read by verify_explorer_parity.py) ─────
+#
+# The freshness gate asks one question: did the builder change since these
+# artifacts were built? It used to answer it by comparing mtimes, which is wrong
+# for the way this repo is actually handled -- `git clone`, `git checkout` and
+# `git merge` rewrite every tracked file's mtime in one burst, in write order.
+# The merge to main left all seven Parquet files 6-170 MILLISECONDS older than
+# this script and failed the gate on artifacts that were perfectly current
+# (9 of 9 value checks passed at the same time); on a fresh clone the check
+# passes or fails by luck of ordering. Task 3's ledger had already flagged this
+# as a deferred minor.
+#
+# A hash of the builder's own source answers the real question, and is immune to
+# timestamps, clones and checkouts. It ships next to the Parquet so the gate
+# works on a fresh clone -- `docs/data/` survives .gitignore's bare `data/` rule
+# only through the explicit `!/docs/data/` negation (Ruling R12), which does
+# cover this file: `git check-ignore -v docs/data/build-manifest.json` exits 1.
+MANIFEST_NAME = "build-manifest.json"
+REBUILD_CMD = "`.venv-local/bin/python pipeline/build_explorer_data.py`"
+
+
+def builder_sha256(builder_path: Path | None = None) -> str:
+    """SHA-256 of the builder's own source bytes."""
+    target = builder_path or Path(__file__).resolve()
+    return hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def write_manifest(data_dir: Path, artifact_names, payload_generated=None) -> Path:
+    path = data_dir / MANIFEST_NAME
+    path.write_text(json.dumps({
+        "builder": "pipeline/build_explorer_data.py",
+        "builder_sha256": builder_sha256(),
+        "artifacts": sorted(artifact_names),
+        # Informational only, never gated on: which published payload these
+        # artifacts sit beside. Nothing compares it, so it is labelled here
+        # rather than left to look like a second check.
+        "payload_generated": payload_generated,
+    }, indent=2) + "\n")
+    return path
+
+
+def freshness_verdict(data_dir: Path, builder_path: Path) -> tuple[bool, str]:
+    """(ok, message) for the gate. Every failure names the fix, not just the fact."""
+    path = data_dir / MANIFEST_NAME
+    if not path.exists():
+        return False, f"{MANIFEST_NAME} is missing -- re-run {REBUILD_CMD}"
+    try:
+        manifest = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return False, f"{MANIFEST_NAME} is not valid JSON ({exc}) -- re-run {REBUILD_CMD}"
+
+    recorded = manifest.get("builder_sha256")
+    current = builder_sha256(builder_path)
+    if recorded != current:
+        return False, (
+            f"{builder_path.name} has changed since these artifacts were built "
+            f"(recorded {str(recorded)[:12]}, current {current[:12]}) -- "
+            f"re-run {REBUILD_CMD}"
+        )
+
+    absent = [n for n in manifest.get("artifacts", [])
+              if not (data_dir / f"{n}.parquet").exists()]
+    if absent:
+        return False, (
+            f"manifest lists {absent} but the Parquet is absent -- re-run {REBUILD_CMD}"
+        )
+
+    return True, (
+        f"{builder_path.name} unchanged since these artifacts were built "
+        f"({current[:12]}); all {len(manifest.get('artifacts', []))} artifacts present"
+    )
 
 # The fixed dimension set. in_top50_basket is a real grouping dimension, not a
 # post-hoc filter: cube_dims has no hcpcs_cd, so once aggregated it could not
@@ -293,6 +367,13 @@ def main() -> int:
         total += written
         print(f"  {name:<18} {table.num_rows:>9,} rows  {written / 1e6:>7.2f} MB")
     print(f"\nTotal {total / 1e6:.1f} MB in {OUT_DIR.relative_to(REPO)}")
+
+    payload = REPO / "docs" / "data.json"
+    generated = None
+    if payload.exists():
+        generated = json.loads(payload.read_text()).get("meta", {}).get("generated")
+    manifest = write_manifest(OUT_DIR, artifacts, generated)
+    print(f"Manifest {manifest.relative_to(REPO)} -- builder {builder_sha256()[:12]}")
     return 0
 
 
