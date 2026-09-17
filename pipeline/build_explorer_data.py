@@ -52,6 +52,13 @@ MEASURES = [
     ("Tot_Mdcr_Alowd_Amt", "sum"),
     ("Tot_Mdcr_Pymt_Amt", "sum"),
     ("Tot_Mdcr_Stdzd_Amt", "sum"),
+    # Ruling R13: hero 2's patient exposure is BENEFICIARY-weighted
+    # (04_gold_hero_marts.ipynb cell 5), not service-weighted like
+    # Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt (= Avg_* x Tot_Srvcs). Products summed
+    # at row grain stay additive through any later GROUP BY, so bw_sbmtd/
+    # bw_pymt are computed once in load_fact() and just summed here.
+    ("bw_sbmtd", "sum"),
+    ("bw_pymt", "sum"),
 ]
 
 # Exact distinct-provider counts, at the grains the panel guardrails need.
@@ -67,6 +74,10 @@ COHORT_GRAINS = {
 }
 
 _MONEY_SUFFIXES = ("Chrg_sum", "Amt_sum")
+# bw_sbmtd_sum/bw_pymt_sum are money too (beneficiary-weighted dollar sums,
+# Ruling R13) but don't end in either suffix above -- listed explicitly so
+# they don't fall through to the int64 branch below and get truncated.
+_MONEY_NAMES = {"bw_sbmtd_sum", "bw_pymt_sum"}
 
 
 def tighten(table: pa.Table) -> pa.Table:
@@ -75,7 +86,7 @@ def tighten(table: pa.Table) -> pa.Table:
     for f in table.schema:
         if pa.types.is_string(f.type):
             fields.append(pa.field(f.name, pa.dictionary(pa.int32(), pa.string())))
-        elif f.name.endswith(_MONEY_SUFFIXES):
+        elif f.name.endswith(_MONEY_SUFFIXES) or f.name in _MONEY_NAMES:
             # Money is float64 deliberately: float32 cube rows sum to $124.61 error
             # vs. exact published totals; float64 is exact.
             fields.append(pa.field(f.name, pa.float64()))
@@ -170,6 +181,11 @@ FACT_COLUMNS = [
     # is currently a no-op filter target -- kept because a future CMS vintage
     # could introduce nulls and silently change hero 1's numbers.
     "Avg_Mdcr_Stdzd_Amt",
+    # Ruling R13: row-grain averages needed to build the beneficiary-weighted
+    # measures below. Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt are SERVICE-weighted
+    # (Avg_* x Tot_Srvcs) and cannot substitute -- hero 2's exposure is
+    # weighted by Tot_Benes instead, and the two diverge by >40% in practice.
+    "Avg_Sbmtd_Chrg", "Avg_Mdcr_Pymt_Amt",
 ]
 
 
@@ -183,7 +199,23 @@ def load_fact() -> pa.Table:
     fact = pa.Table.from_pandas(df[FACT_COLUMNS], preserve_index=False)
     basket = resolve_top50_basket(fact)
     flag = pc.is_in(fact["hcpcs_cd"], value_set=pa.array(sorted(basket)))
-    return fact.append_column("in_top50_basket", flag)
+    fact = fact.append_column("in_top50_basket", flag)
+
+    # Ruling R13: materialize the beneficiary-weighted products at row grain,
+    # BEFORE any GROUP BY, so they stay additive through every cube -- the
+    # same trick as in_top50_basket and cube_code_h4. pc.multiply is
+    # null-safe (null * x -> null, never silently 0), so a missing Avg_* or
+    # Tot_Benes correctly drops that row from the weighted sum instead of
+    # dragging the average toward zero.
+    bw_sbmtd = pc.multiply(
+        fact["Avg_Sbmtd_Chrg"].cast(pa.float64()), fact["Tot_Benes"].cast(pa.float64())
+    )
+    bw_pymt = pc.multiply(
+        fact["Avg_Mdcr_Pymt_Amt"].cast(pa.float64()), fact["Tot_Benes"].cast(pa.float64())
+    )
+    fact = fact.append_column("bw_sbmtd", bw_sbmtd)
+    fact = fact.append_column("bw_pymt", bw_pymt)
+    return fact
 
 
 def load_dim_provider() -> pa.Table:

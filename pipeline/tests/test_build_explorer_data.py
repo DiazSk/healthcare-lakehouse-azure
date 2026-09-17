@@ -72,6 +72,12 @@ FACT_COLS = {
     "Tot_Mdcr_Alowd_Amt": [500.0, 600.0, 700.0, 800.0],
     "Tot_Mdcr_Pymt_Amt": [400.0, 500.0, 600.0, 700.0],
     "Tot_Mdcr_Stdzd_Amt": [390.0, 490.0, 590.0, 690.0],
+    # Ruling R13: beneficiary-weighted products, as load_fact() would compute
+    # them (Avg_Sbmtd_Chrg/Avg_Mdcr_Pymt_Amt x Tot_Benes). Values here don't
+    # need to reconcile with Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt above -- these
+    # tests only check that the columns survive build_cube/tighten.
+    "bw_sbmtd": [3800.0, 4800.0, 3900.0, 2800.0],
+    "bw_pymt": [3600.0, 4500.0, 3700.0, 2450.0],
 }
 
 
@@ -119,6 +125,50 @@ def test_tighten_dictionary_encodes_dimensions_and_widens_money():
     assert pa.types.is_dictionary(out.schema.field("specialty").type)
     assert pa.types.is_float64(out.schema.field("Tot_Mdcr_Pymt_Amt_sum").type)
     assert pa.types.is_int64(out.schema.field("Tot_Srvcs_sum").type)
+
+
+def test_tighten_widens_bene_weighted_measures_to_float64():
+    # Ruling R13: bw_sbmtd_sum/bw_pymt_sum are money but don't end in
+    # "Chrg_sum"/"Amt_sum", so _MONEY_SUFFIXES alone would miss them and let
+    # them fall through to the int64 branch, truncating money to whole
+    # dollars.
+    out = tighten(build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"]))
+    assert pa.types.is_float64(out.schema.field("bw_sbmtd_sum").type)
+    assert pa.types.is_float64(out.schema.field("bw_pymt_sum").type)
+
+
+def test_bene_weighted_exposure_differs_from_service_weighted():
+    # Ruling R13: hero 2's published patient exposure is BENEFICIARY-weighted
+    # (SUM(Avg_* x Tot_Benes) / SUM(Tot_Benes)), not service-weighted like
+    # Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt (= Avg_* x Tot_Srvcs). Row A has many
+    # benes and few services; row B the reverse -- so the two weightings must
+    # land far apart. This fails if bw_sbmtd/bw_pymt are ever "simplified"
+    # back to reusing Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt.
+    t = pa.table({
+        "specialty": ["Cardiology", "Cardiology"],
+        "Tot_Benes": pa.array([100, 1], pa.int64()),
+        "Tot_Srvcs": pa.array([1, 100], pa.int64()),
+        "Tot_Sbmtd_Chrg": [100.0, 1000.0],    # Avg_Sbmtd_Chrg (100, 10) x Tot_Srvcs
+        "Tot_Mdcr_Alowd_Amt": [0.0, 0.0],     # unused by this test; MEASURES needs it
+        "Tot_Mdcr_Pymt_Amt": [90.0, 900.0],   # Avg_Mdcr_Pymt_Amt (90, 9)  x Tot_Srvcs
+        "Tot_Mdcr_Stdzd_Amt": [0.0, 0.0],     # unused by this test; MEASURES needs it
+        "bw_sbmtd": [100.0 * 100, 10.0 * 1],  # Avg_Sbmtd_Chrg x Tot_Benes
+        "bw_pymt": [90.0 * 100, 9.0 * 1],     # Avg_Mdcr_Pymt_Amt x Tot_Benes
+    })
+    cube = build_cube(t, ["specialty"])
+    row = cube.to_pylist()[0]
+
+    bene_weighted = (row["bw_sbmtd_sum"] - row["bw_pymt_sum"]) / row["Tot_Benes_sum"]
+    service_weighted = (
+        (row["Tot_Sbmtd_Chrg_sum"] - row["Tot_Mdcr_Pymt_Amt_sum"]) / row["Tot_Benes_sum"]
+    )
+    assert bene_weighted == pytest.approx(1001 / 101)
+    assert service_weighted == pytest.approx(110 / 101)
+    assert bene_weighted != pytest.approx(service_weighted, rel=0.1), (
+        "bene-weighted and service-weighted exposure must diverge here -- if "
+        "they match, bw_sbmtd/bw_pymt have been swapped for the service-"
+        "weighted Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt columns"
+    )
 
 
 def test_cohorts_counts_distinct_providers_not_rows():

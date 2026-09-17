@@ -125,6 +125,24 @@ check(
     tol=0.5,
 )
 
+# Hero 2 (Ruling R13): patient exposure is BENEFICIARY-weighted
+# (SUM(Avg_Sbmtd_Chrg x Tot_Benes) / SUM(Tot_Benes) minus the same for
+# Avg_Mdcr_Pymt_Amt -- 04_gold_hero_marts.ipynb cell 5), not service-weighted
+# like Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt (= Avg_* x Tot_Srvcs). Using the
+# service-weighted measures here would be 41% off (measured for Dermatology:
+# $260.60 vs. published $184.68) while still looking plausible -- this check
+# exists so that error can't ship silently.
+derm = next(r for r in PAYLOAD["nonpar"] if r["specialty"] == "Dermatology")
+check(
+    "hero2 Dermatology participating exposure (bene-weighted)",
+    con.execute("""
+        SELECT (SUM(bw_sbmtd_sum) - SUM(bw_pymt_sum)) / SUM(Tot_Benes_sum)
+        FROM cube_dims WHERE specialty = 'Dermatology' AND is_participating
+    """).fetchone()[0],
+    derm["exp_y"],
+    tol=0.01,
+)
+
 # Hero 4 (Ruling R9): the chargemaster markup ratio needs Tot_Srvcs >= 25 AND
 # provider_tier <> 'Other/Unknown', a ROW-grain predicate no existing cube
 # preserves -- not even cube_full (863,230 cells from 9,660,252 rows). Check
