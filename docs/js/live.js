@@ -352,9 +352,42 @@
     return s.length ? s[Math.floor(s.length / 2)] : null;
   }
 
+  /* The render seam's sequencing. It lives here rather than inline in
+     index.html so it can be tested: an error-path regression that only a human
+     clicking the toggle can catch is the same coverage gap live.test.js exists to
+     close.
+
+     Two rules, both load-bearing:
+
+     - A superseded request gives up its stale VIEW but keeps its PAINT. Each call
+       site paints a different, narrow set of panels, so the newer request's
+       fresher view has to satisfy every panel an older one was going to repaint.
+       Dropping both left hero 1 showing the previous cohort under a changed State
+       filter, with no error and no visual cue.
+     - A failing source REJECTS. Swallowing it here also swallowed it on the
+       toggle's awaited enable path, so the toggle's own catch -- which exists to
+       roll back to the summary -- never ran and the page sat there reading
+       "Live — querying 9.66M rows in your browser" over static numbers. The
+       fire-and-forget call sites swallow for themselves; this does not do it for
+       them. Pending paints survive a rejection, so the next successful request
+       still satisfies them. */
+  function renderSeam(source) {
+    let seq = 0;
+    let pending = [];
+    return async function withView(paint) {
+      pending.push(paint);
+      const mine = ++seq;
+      const v = await source();
+      if (mine !== seq) return;
+      const paints = pending;
+      pending = [];
+      for (const p of paints) p(v);
+    };
+  }
+
   async function enable() { _enabled = true; }
   function disable() { _enabled = false; }
 
   root.MD = root.MD || {};
-  root.MD.live = { enable, disable, isEnabled, viewFromQueries };
+  root.MD.live = { enable, disable, isEnabled, viewFromQueries, renderSeam };
 })(typeof window !== "undefined" ? window : globalThis);

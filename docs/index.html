@@ -244,32 +244,17 @@ E.onProgress(({ phase, loaded, total }) => {
    renderAll() would leave the three filter handlers calling viewFromPayload()
    directly, so live mode would silently repaint static numbers the moment
    anyone touched a select — while the toggle still claimed to be live.
+   Sequencing and paint-queue semantics live in live.js, where they are tested. */
+const withView = L.renderSeam(() =>
+  L.isEnabled() ? L.viewFromQueries(F) : viewFromPayload());
 
-   Each call site paints a different, narrow set of panels, so a superseded
-   request must give up its stale VIEW but keep its PAINT: the newer request's
-   fresher view has to satisfy every panel an older one was going to repaint.
-   Dropping both left hero 1 showing the previous cohort under a changed State
-   filter — no error, no visual cue — because only the superseded request would
-   have repainted it. */
-let _viewSeq = 0;
-let _pending = [];
-async function withView(paint) {
-  _pending.push(paint);
-  const mine = ++_viewSeq;
-  let v;
-  try {
-    v = L.isEnabled() ? await L.viewFromQueries(F) : viewFromPayload();
-  } catch (err) {
-    // Nothing awaits these handlers, so an escaping rejection becomes an
-    // unhandledrejection. The paints stay queued for the next request.
-    console.warn(err);
-    return;
-  }
-  if (mine !== _viewSeq) return;
-  const paints = _pending;
-  _pending = [];
-  for (const p of paints) p(v);
-}
+/* Nothing awaits the filter handlers, the theme toggle or the first paint, so a
+   rejection there would surface as an unhandledrejection; swallow it at exactly
+   those call sites. The toggle's ENABLE path deliberately does not use this — it
+   awaits renderAll() so its own catch can roll back to the summary. Swallowing
+   there left the page reading "Live — querying 9.66M rows" over static numbers,
+   with the failure surfaced nowhere. */
+const detach = (p) => { p.catch(err => console.warn(err)); };
 
 /* Badge the cohort the filter actually selects. With no specialty filter the
    panel shows all 36 published rows, and there is no single cohort to
@@ -321,19 +306,19 @@ function init() {
   // that.
   document.getElementById("fState").onchange = e => {
     F.state = e.target.value;
-    withView(v => { P.renderHero1(v, F); P.renderProviders(v, F, PROV_STATE); });
+    detach(withView(v => { P.renderHero1(v, F); P.renderProviders(v, F, PROV_STATE); }));
   };
   document.getElementById("fRuca").onchange = e => {
     F.ruca = e.target.value;
-    withView(v => P.renderHero1(v, F));
+    detach(withView(v => P.renderHero1(v, F)));
   };
   document.getElementById("fSpec").onchange = e => {
     F.spec = e.target.value;
-    withView(v => {
+    detach(withView(v => {
       P.renderHero2(v, F);
       P.renderProviders(v, F, PROV_STATE);
       badgeHero2(v);
-    });
+    }));
   };
   document.getElementById("fLive").onclick = async ev => {
     const btn = ev.currentTarget, chipH3 = document.getElementById("chipH3");
@@ -343,7 +328,8 @@ function init() {
       btn.textContent = "Explore the full dataset";
       liveStatus.textContent = "";
       chipH3.textContent = "National";
-      return renderAll();
+      detach(renderAll());
+      return;
     }
     if (!E.isSupported()) {
       liveStatus.textContent = "Interactive mode unavailable in this browser.";
@@ -353,20 +339,24 @@ function init() {
     try {
       await E.loadTier(1);
       await L.enable();
+      // renderAll() is awaited bare, NOT detached: a failure has to reach the
+      // catch below. Nothing is relabelled until that first live render has
+      // actually succeeded, so the page never asserts a state it is not in and
+      // the failure path needs no rollback beyond disable(). The button is
+      // disabled throughout, and the progress line is what the visitor sees.
+      await renderAll();
       btn.setAttribute("aria-pressed", "true");
       btn.textContent = "Back to the summary";
       // Only hero 3 gains filters: addProviderGrain slices providers_drug by
       // state and specialty. Heroes 4 and 5 query cube_code, which carries no
       // state or specialty column, so their "National" chips stay true.
       chipH3.textContent = "Responds to: State · Specialty";
-      await renderAll();
-      // After renderAll, or the tier-2 progress line would be the last word.
+      // Last, or the tier-2 progress line would be the final word.
       liveStatus.textContent = "Live — querying 9.66M rows in your browser";
     } catch (err) {
       console.warn(err);
-      liveStatus.textContent = "Interactive mode unavailable — showing the summary.";
       L.disable();
-      chipH3.textContent = "National";
+      liveStatus.textContent = "Interactive mode unavailable — showing the summary.";
     } finally {
       btn.disabled = false;
     }
@@ -374,9 +364,9 @@ function init() {
   document.getElementById("theme").onclick = () => {
     const dark = document.documentElement.getAttribute("data-theme") === "dark";
     document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
-    renderAll();
+    detach(renderAll());
   };
-  renderAll();
+  detach(renderAll());
 }
 function renderTokensInit() {
   // Honour the OS preference on first paint; the button overrides it afterwards.

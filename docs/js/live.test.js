@@ -219,3 +219,81 @@ test("a RUCA-only change re-queries nothing that cannot see RUCA", async () => {
     "provider grain re-queried on a RUCA-only change");
   assert.ok(sql.length < first, "nothing was saved");
 });
+
+/* ── render seam ───────────────────────────────────────────────────────────
+   Two rules, both regressions that had already shipped once. The paint-queue
+   rule was found by review on the running page; the rejection rule was
+   introduced by the fix for the first one, because the swallow added for the
+   fire-and-forget filter handlers also covered the toggle's awaited enable path
+   -- so the toggle's catch never ran and the page read "Live — querying 9.66M
+   rows in your browser" over static numbers. Both are unit-testable, and an
+   error path only a human clicking can check is the same gap this file exists
+   to close. */
+
+test("seam: a superseded request keeps its paint and runs it against the newer view", async () => {
+  const { renderSeam } = load().live;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let call = 0;
+  const withView = renderSeam(async () => {
+    call += 1;
+    if (call === 1) await gate;          // the first request is the slow one
+    return { id: call };
+  });
+
+  const painted = [];
+  const slow = withView((v) => painted.push(["hero1", v.id]));
+  const fast = withView((v) => painted.push(["hero2", v.id]));
+  await fast;
+  release();
+  await slow;
+
+  // Both panels painted, both from the NEWER view. Dropping the superseded
+  // request's paint set left hero 1 stale with no error and no visual cue.
+  assert.deepEqual(painted.sort(), [["hero1", 2], ["hero2", 2]]);
+});
+
+test("seam: a stale view never paints over a newer one", async () => {
+  const { renderSeam } = load().live;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let call = 0;
+  const withView = renderSeam(async () => {
+    call += 1;
+    if (call === 1) await gate;
+    return { id: call };
+  });
+  const seen = [];
+  const slow = withView((v) => seen.push(v.id));
+  const fast = withView((v) => seen.push(v.id));
+  await fast;
+  release();
+  await slow;
+  assert.ok(!seen.includes(1), "the stale view reached a paint");
+});
+
+test("seam: a failing source rejects rather than swallowing", async () => {
+  const { renderSeam } = load().live;
+  const boom = new Error("tier 1 unavailable");
+  const withView = renderSeam(async () => { throw boom; });
+  // The toggle awaits this so its own catch can roll back to the summary.
+  // Swallowing here is what let the page claim to be live over static data.
+  await assert.rejects(() => withView(() => {
+    throw new Error("paint must not run on a failed source");
+  }), /tier 1 unavailable/);
+});
+
+test("seam: a pending paint survives a failed source and the next view satisfies it", async () => {
+  const { renderSeam } = load().live;
+  let fail = true;
+  const withView = renderSeam(async () => {
+    if (fail) throw new Error("transient");
+    return { id: "recovered" };
+  });
+  const painted = [];
+  await assert.rejects(() => withView((v) => painted.push(["hero1", v.id])));
+  assert.deepEqual(painted, []);
+  fail = false;
+  await withView((v) => painted.push(["hero2", v.id]));
+  assert.deepEqual(painted, [["hero1", "recovered"], ["hero2", "recovered"]]);
+});
