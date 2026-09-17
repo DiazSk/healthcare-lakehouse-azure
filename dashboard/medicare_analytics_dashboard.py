@@ -101,14 +101,20 @@ def _(gold_is_empty, mo):
             """
             > ## ⚠️  Awaiting Gold layer
             >
-            > None of the Gold tables loaded. This is expected if:
-            > 1. The PySpark notebooks (`notebooks/01_…04_…`) haven't been run yet.
-            > 2. `AZURE_CLIENT_SECRET` is missing or stale in `.env`.
-            > 3. The Databricks workspace storage account isn't reachable from this machine.
+            > None of the Gold tables loaded. Most likely one of:
+            > 1. `LAKEHOUSE_LOCAL_ROOT` isn't set, so the loader is still looking at ADLS.
+            > 2. The Gold layer hasn't been built yet.
             >
-            > Once Gold is populated and `.env` is set, restart this dashboard.
-            > In the meantime, the **demo dashboard** (`medicare_demo_dashboard.py`)
-            > runs on synthetic data with no Azure dependency.
+            > To build it from the public CMS source — no Azure account needed:
+            >
+            > ```
+            > ./pipeline/download.sh
+            > python pipeline/run_local.py
+            > LAKEHOUSE_LOCAL_ROOT="$PWD/data" marimo edit dashboard/medicare_analytics_dashboard.py
+            > ```
+            >
+            > The published static dashboard in `docs/` carries the same numbers
+            > and needs no pipeline run at all.
             """
         )
         if gold_is_empty

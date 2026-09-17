@@ -1,81 +1,64 @@
-# Medicare Reimbursement Gap Analyzer — Marimo Dashboard
+# marimo dashboard
 
-Interactive Python web dashboard for the CMS *Medicare Physician & Other Practitioners by Provider and Service* dataset.
+A reactive Python dashboard over the Gold layer, for exploring the data interactively.
 
-> **This is the secondary / interim viz layer.** Power BI is the long-term primary dashboard. This marimo app exists to give a runnable interactive view of the 5 hero insights while the Power BI build is in flight — and to serve as a portfolio-friendly demo that anyone with Python can launch in two commands.
+> **This is the secondary surface.** The primary, published dashboard is the static
+> [`docs/index.html`](../docs/index.html) — a single self-contained file with no runtime,
+> served at
+> [diazsk.github.io/healthcare-lakehouse-azure](https://diazsk.github.io/healthcare-lakehouse-azure/).
+> Use this marimo app when you want to slice the data yourself in Python rather than read
+> a finished narrative.
 
 ## What's in here
 
 | File | Purpose |
 |---|---|
-| `medicare_demo_dashboard.py` | Runs on **synthetic** Gold-shaped data. No Azure auth needed. Use for portfolio reviews and offline smoke tests. |
-| `medicare_analytics_dashboard.py` | Reads the **real Gold Delta tables** from ADLS Gen2 via `deltalake`. Requires `.env` auth and a populated Gold layer. |
-| `utils/theme.py` | Color tokens + Plotly layout, so every serving surface shares one visual language. |
-| `utils/data_loader.py` | `deltalake` → pandas loaders, one per Gold table. Gracefully returns empty DataFrames if Gold isn't reachable. |
-| `utils/synthetic.py` | NumPy/pandas generators that mimic Gold table schemas — keeps the demo's chart code identical to the analytics version. |
-
-## Sections (both dashboards)
-
-1. KPI ribbon — Medicare allowed $, total services, unique NPIs, non-par share, median codes/NPI
-2. Hero #1 — Geographic arbitrage (choropleth + tornado)
-3. Hero #2 — Non-participating premium (slope chart)
-4. Hero #3 — J-code concentration (Lorenz curve + drug treemap)
-5. Hero #4 — Credentials markup cliff (grouped bar over shared E&M codes)
-6. Hero #5 — Site-neutral simulation (45° dot-plot + savings KPI)
-7. Provider outlier explorer (interactive table, filterable)
+| `medicare_analytics_dashboard.py` | Reads the **real Gold Delta tables** — local filesystem by default, ADLS Gen2 if configured. |
+| `utils/data_loader.py` | `deltalake` → pandas loaders, one per Gold table. Set `DATA_LOADER_STRICT=1` to raise on failure instead of returning empty frames. |
+| `utils/theme.py` | Color tokens + Plotly layout defaults, applied to every figure. |
 
 ## Quickstart
 
+Requires a populated Gold layer. From the repo root:
+
 ```bash
-# 1. Install deps (from repo root)
-pip install -r ../requirements.txt
+./pipeline/download.sh          # 3.06 GB public CMS source
+python pipeline/run_local.py    # build Bronze → Silver → Gold, ~4 min
+```
 
-# 2. Demo (no Azure needed)
-marimo edit medicare_demo_dashboard.py        # interactive notebook UI
-# OR
-marimo run medicare_demo_dashboard.py --port 8501   # headless web app
+Then:
 
-# 3. Analytics (real Gold tables)
-#    Prereq: populate Gold by running the PySpark notebooks in ../notebooks/.
-#    Prereq: copy ../.env.example to ../.env and fill in AZURE_CLIENT_SECRET.
-marimo edit medicare_analytics_dashboard.py
+```bash
+LAKEHOUSE_LOCAL_ROOT="$PWD/data" marimo edit dashboard/medicare_analytics_dashboard.py
+# or headless:
+LAKEHOUSE_LOCAL_ROOT="$PWD/data" marimo run dashboard/medicare_analytics_dashboard.py --port 8501
 ```
 
 ## Data flow
 
 ```
-ADLS Gen2 (Gold container)
+data/gold/  (or abfss://gold@… when LAKEHOUSE_LOCAL_ROOT is unset)
      │
-     │  deltalake.DeltaTable(uri, storage_options={...sp creds...})
+     │  deltalake.DeltaTable(path)  — no Spark, no SQL warehouse
      ▼
-pandas DataFrame (cached in dashboard/utils/data_loader.py)
+pandas DataFrame  (cached in utils/data_loader.py)
      │
-     │  duckdb.sql("SELECT ...") for reactive filtering
+     │  duckdb.sql("SELECT …") for reactive filtering
      ▼
-plotly chart  →  mo.ui.plotly  →  marimo cell render
+plotly figure  →  mo.ui.plotly  →  marimo cell
 ```
-
-No Spark, no Databricks SQL warehouse, no cost when idle. All the heavy
-lifting (Bronze→Silver→Gold) is already complete in `../notebooks/`.
 
 ## Authentication
 
-The analytics dashboard authenticates to ADLS Gen2 using the same Service Principal that the PySpark notebooks use, but the secret value is read **locally** from `../.env` (gitignored) rather than from the Databricks Key Vault scope (which is unreachable outside Databricks).
+**None locally.** With `LAKEHOUSE_LOCAL_ROOT` set, the loader reads the filesystem
+directly — no credential is involved.
 
-Required env vars in `.env`:
-
-```
-AZURE_STORAGE_ACCOUNT=sthealthcareplatdev
-AZURE_TENANT_ID=...
-AZURE_CLIENT_ID=...
-AZURE_CLIENT_SECRET=<rotated-SP-client-secret>
-```
-
-The rotated secret should NEVER be committed. `.env` is in `.gitignore`. Run `git check-ignore -v .env` to verify before pushing.
+To point it at a live ADLS Gen2 account instead, leave that variable unset and supply
+`AZURE_STORAGE_ACCOUNT`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`
+in a gitignored `../.env`. Verify with `git check-ignore -v .env` before pushing. The
+original project's Azure subscription is retired, so this path is unused today.
 
 ## Theme
-
-The color tokens in `utils/theme.py`:
 
 | Token | Hex | Use |
 |---|---|---|
@@ -83,16 +66,32 @@ The color tokens in `utils/theme.py`:
 | `surface` | `#FFFFFF` | Chart canvas |
 | `text` | `#0F172A` | Primary text |
 | `primary` | `#0284C7` | Default chart accent |
-| `savings` | `#059669` | Positive / net-sender / savings |
-| `anomaly` | `#E11D48` | Anomaly / net-receiver / warning |
+| `savings` | `#059669` | Positive / net-sender |
+| `anomaly` | `#E11D48` | Anomaly / net-receiver |
 
-Every Plotly figure goes through `theme.apply_theme(fig)` so the visual language is identical across all sections and matches the upcoming Power BI report.
+Every figure goes through `theme.apply_theme(fig)`.
+
+Note these are **not** the same tokens as the published dashboard, which uses a separately
+CVD-validated palette with a dark mode. The two surfaces are intentionally allowed to
+diverge; `docs/index.html` is the one tuned for accessibility.
+
+## A caveat on framing
+
+The chart *framing* in this app predates the analysis. Two of the five original hypotheses
+were refuted once the real numbers came in, and the published dashboard in `docs/` reports
+them as refuted — with minimum-cohort thresholds and the professional-fee-only caveat.
+This marimo app still presents the original directional framing (a slope chart implying a
+non-participating premium, a "savings" KPI for site-of-service).
+
+**Treat `docs/index.html` as the correct interpretation.** See the findings table in the
+[root README](../README.md#what-the-data-actually-showed).
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| Analytics dashboard renders the "Awaiting Gold layer" banner | Gold tables haven't been written yet, or `AZURE_CLIENT_SECRET` is missing/stale. Run `notebooks/01_…04_…` first. |
-| `marimo: command not found` | `pip install -r requirements.txt` in your venv. |
-| `deltalake` import error | Demo dashboard still works without it (soft import in `data_loader.py`). For analytics, `pip install deltalake>=0.18`. |
-| Charts render but are blank | Filter selections returned an empty DataFrame — clear filters from the global bar. |
+| "Awaiting Gold layer" banner | `LAKEHOUSE_LOCAL_ROOT` isn't set, or the Gold layer hasn't been built. Run `pipeline/run_local.py`. |
+| `marimo: command not found` | `pip install -r ../requirements-local.txt` in your venv, plus `marimo`. |
+| `deltalake` import error | `pip install 'deltalake>=0.18,<1.0'`. Versions ≥1.0 changed the API this loader targets. |
+| Loaders silently return nothing | By design — `data_loader` degrades to empty frames so the UI doesn't crash. Set `DATA_LOADER_STRICT=1` to see the real error. |
+| Charts render blank | A filter selection returned an empty frame; clear the global filter bar. |

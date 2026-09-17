@@ -288,10 +288,9 @@ healthcare-lakehouse-azure/
 │   ├── MEASURES.md                # Full DAX measure set with expected values
 │   └── BUILD_GUIDE.md             # Click-by-click build + 6-page layout + theme
 │
-├── dashboard/                     # marimo reactive apps
+├── dashboard/                     # marimo reactive app over the Gold layer
 │   ├── medicare_analytics_dashboard.py   # Real Gold tables (local or ADLS)
-│   ├── medicare_demo_dashboard.py        # Synthetic, runs with no pipeline
-│   └── utils/{data_loader,theme,synthetic}.py
+│   └── utils/{data_loader,theme}.py
 │
 ├── infrastructure/                # Terraform IaC for the Azure path
 ├── requirements.txt               # Databricks-side contract
@@ -378,12 +377,12 @@ Leave `LAKEHOUSE_LOCAL_ROOT` unset and the `abfss://` paths apply automatically.
 ### Option C: marimo reactive dashboard (local)
 
 ```bash
-# Real Gold tables, read from data/gold/ via deltalake
+# Reads the real Gold tables from data/gold/ via deltalake
 LAKEHOUSE_LOCAL_ROOT="$PWD/data" .venv-local/bin/marimo edit dashboard/medicare_analytics_dashboard.py
-
-# Or the synthetic-data demo, which needs no pipeline run at all
-.venv-local/bin/marimo edit dashboard/medicare_demo_dashboard.py
 ```
+
+Requires a completed pipeline run (Option A). Every figure it shows is the same data
+behind the published dashboard — cross-checked to the cent.
 
 ### Option D: Power BI
 
