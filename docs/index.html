@@ -276,5 +276,25 @@ if (DATA) init();
 else document.getElementById("kpis").innerHTML =
   '<p class="empty">No data embedded. Run <code>python pipeline/publish_dashboard.py</code>.</p>';
 </script>
+
+<!-- Temporary probe for Task 7; removed in Task 8 once panels drive the engine. -->
+<script src="js/engine.js"></script>
+<script>
+window.__probe = async () => {
+  const E = window.MD.engine;
+  E.onProgress((p) => console.log("progress", p));
+  const t0 = performance.now();
+  await E.loadTier(1);
+  console.log(`tier 1 loaded in ${(performance.now() - t0).toFixed(0)}ms`);
+  console.table(await E.query(`
+    SELECT ROUND(SUM(Tot_Mdcr_Pymt_Amt_sum), 2) AS paid,
+           COUNT(*) AS cube_rows
+    FROM cube_dims`));
+  const t1 = performance.now();
+  await E.query(`SELECT state_abrvtn, SUM(Tot_Mdcr_Pymt_Amt_sum) - SUM(Tot_Mdcr_Stdzd_Amt_sum) AS prem
+                 FROM cube_dims WHERE in_top50_basket GROUP BY 1 ORDER BY 2 DESC LIMIT 5`);
+  console.log(`panel-shaped query: ${(performance.now() - t1).toFixed(0)}ms`);
+};
+</script>
 </body>
 </html>
