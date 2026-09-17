@@ -160,3 +160,13 @@
     .card { break-inside: avoid; border-color: #ccc; }
     body { background: #fff; }
   }
+
+  /* Small-sample guardrail badges. Never display:none — the point is that the
+     number stays visible and announces its own unreliability. */
+  .badge-reliability { font-size: 11px; letter-spacing: 0.03em; padding: 2px 8px;
+    border-radius: 100px; border: 1px solid var(--border); background: var(--plane);
+    color: var(--ink-2); white-space: nowrap; }
+  .badge-reliability[data-reliability="thin"] { color: var(--series-2);
+    border-color: var(--series-2); }
+  .badge-reliability[data-reliability="very-thin"] { color: var(--critical);
+    border-color: var(--critical); }
