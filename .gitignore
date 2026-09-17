@@ -42,3 +42,7 @@ CLAUDE.md
 context/
 .claude/
 .ignore
+
+# Personal working material — article drafts, resume copy, interview notes.
+# Mine, not documentation for anyone reading this repo.
+writing/
