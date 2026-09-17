@@ -5,7 +5,8 @@
 An end-to-end **data lakehouse** over the CMS *Medicare Physician & Other Practitioners by
 Provider and Service* dataset — **9.66 million claim rows** transformed through a
 **Medallion architecture** (Bronze → Silver → Gold) in **PySpark on Delta Lake**, surfacing
-five billing-anomaly insights through a static analytics dashboard.
+five billing-anomaly insights through an analytics dashboard that runs SQL over all
+9.66 million rows **in the browser** — no server, no database, no sign-in.
 
 Originally built and executed on **Azure Databricks + ADLS Gen2**, provisioned with
 **Terraform**. The Azure subscription has since been retired, so the pipeline was made
@@ -65,7 +66,7 @@ flowchart LR
 
     subgraph VIZ["Serving"]
         direction TB
-        WEB["Static dashboard<br/>docs/index.html · GitHub Pages"]:::viz
+        WEB["Dashboard + in-browser SQL<br/>docs/ · GitHub Pages"]:::viz
         MAR["marimo + Plotly<br/>local reactive app"]:::viz
         PBI["Power BI-ready model<br/>Parquet + DAX + guide"]:::viz
     end
@@ -157,10 +158,10 @@ Two properties of the source shape the whole analysis:
 | Infrastructure | [Terraform](https://www.terraform.io/) | RG, ADLS, Key Vault, ADF, Databricks workspace |
 | Ingest | [Azure Data Factory](https://learn.microsoft.com/azure/data-factory/) | Original CMS → Bronze ingest |
 | Identity / Secrets | Microsoft Entra ID + [Key Vault](https://learn.microsoft.com/azure/key-vault/) | SP OAuth into ADLS via a KV-backed secret scope |
-| **Primary BI** | **Static HTML + [Chart.js](https://www.chartjs.org/) 4.5** | **The live dashboard — no server, no runtime, permanent URL** |
+| **Primary BI** | **Static HTML + [Chart.js](https://www.chartjs.org/) 4.5 + [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview.html) 1.32** | **The live dashboard — no server, no runtime, permanent URL; panels recompute from SQL client-side** |
 | Reactive BI | [marimo](https://marimo.io/) + [Plotly](https://plotly.com/python/) | Local reactive Python app over the Gold layer |
 | BI-ready model | [Power BI](https://powerbi.microsoft.com/desktop/) | Parquet export + documented DAX measure set (`powerbi/`) |
-| Query | [DuckDB](https://duckdb.org/) | Ad-hoc slicing inside the marimo app |
+| Query | [DuckDB](https://duckdb.org/) | Ad-hoc slicing in the marimo app; compiled to WebAssembly for the live dashboard |
 | Language | [Python 3.11](https://www.python.org/) | Notebooks, pipeline, dashboard tooling |
 
 ---
@@ -247,8 +248,67 @@ what the 2023 data actually returned — see the summary table at the top of thi
 | 4 | `gold_hero_credentials_markup` | MD vs. NP vs. PA markup on shared E&M codes | PA 2.72x > NP 2.69x > MD 2.23x > Specialist 1.79x |
 | 5 | `gold_hero_site_neutral` | Facility vs. non-facility payment per code | 830 of 972 codes pay *less* in facility |
 
-Every mart is deliberately small — 211 to 221,364 rows — so the serving layer needs no
-compute. The dashboard's entire dataset is an 88 KB JSON payload.
+Every mart is deliberately small — 211 to 221,364 rows — so the narrative needs no
+compute: it renders from an 88 KB JSON payload. Interaction is served separately, by the
+tiered Parquet surface described next.
+
+---
+
+## The interactive layer
+
+The narrative renders from the 88 KB payload and always works. On top of it, a toggle
+("Explore the full dataset") swaps every panel's data source from that payload to **live SQL
+over all 9,660,252 rows**, executed by DuckDB compiled to WebAssembly inside the visitor's
+browser. There is no backend: GitHub Pages serves Parquet files, and DuckDB reads them with
+HTTP range requests.
+
+The Gold layer compiles into seven Parquet artifacts, loaded in tiers so a visitor who only
+reads the narrative downloads none of them:
+
+| Tier | Files | Size | Loaded when |
+|---|---|---|---|
+| 1 | `cube_dims`, `cube_code`, `cube_code_h4`, `cohorts` | 3.7 MB | the toggle is switched on |
+| 2 | `providers_drug` | 5.6 MB | a panel needs provider grain (hero 3, outlier table) |
+| 3 | `cube_full`, `providers` | 52 MB | registered as a **view** — scanned by range request, never fully downloaded |
+
+**Why pre-aggregated cubes rather than the raw fact table:** aggregation is what makes the
+data small enough to ship, but it also destroys row-grain predicates. A mart that filters
+`Tot_Srvcs >= 25` per claim row cannot be reproduced from a cube that already summed those
+rows — a `HAVING` on the sum is a different filter. Three of the five hero panels needed
+something materialized at build time to survive this:
+
+- Hero 1 needs `in_top50_basket` as a cube dimension, not a query-time `IN` list.
+- Hero 4 needs its own pre-filtered cube (`cube_code_h4`), because its row-grain service
+  threshold has no post-aggregation equivalent.
+- Hero 2 needs two additive product columns (`bw_sbmtd_sum`, `bw_pymt_sum`), because its
+  published figure is beneficiary-weighted while the cube's totals are service-weighted —
+  a sum of products stays additive through any later `GROUP BY`, a ratio does not.
+
+Each of those was found by measurement, not review: the service-weighted version of hero 2
+was **41% off** and looked entirely plausible.
+[`pipeline/verify_explorer_parity.py`](pipeline/verify_explorer_parity.py) is the guard —
+10 assertions that the live queries reproduce the published figures to the cent, including
+specific published *cells* rather than only totals, because an aggregate check passed once
+while all 36 of its constituent cells were wrong.
+
+**Small samples warn rather than hide.** Exact distinct-provider counts are precomputed per
+cohort grain (summing per-cell counts would double-count anyone appearing in more than one
+cell). Filtering hero 2 to Orthopedic Surgery renders its `+2,223%` figure *with* an
+`n=11 · thin sample` badge at reduced opacity — CMS's own suppression floor is 11 — so the
+artifact documents its own weakness instead of either publishing a false headline or
+showing a dead panel.
+
+**Degradation is a designed path, not a hope.** DuckDB ships as an ES module and needs
+`fetch`, so interaction requires a real HTTP origin; over `file://`, or when the CDN is
+blocked, or where WebAssembly is unavailable, the toggle explains itself and the page stays
+on the static payload with all 8 charts intact. The `eh` (single-threaded) DuckDB bundle is
+mandatory here: GitHub Pages cannot set COOP/COEP headers, so `SharedArrayBuffer` is
+unavailable and the multithreaded build cannot initialise.
+
+> **If you re-run the pipeline:** `publish_dashboard.py` and `build_explorer_data.py` are
+> separate steps and are *not* chained. Running only the first leaves `docs/data/*.parquet`
+> describing an older Gold layer than the inlined payload, so the static and live numbers
+> would silently disagree. Always run both, then `verify_explorer_parity.py`.
 
 ---
 
@@ -258,8 +318,11 @@ compute. The dashboard's entire dataset is an 88 KB JSON payload.
 healthcare-lakehouse-azure/
 │
 ├── docs/                          # THE DELIVERABLE — served by GitHub Pages
-│   ├── index.html                 # Self-contained dashboard (data inlined)
-│   └── data.json                  # Canonical 88 KB pre-aggregated extract
+│   ├── index.html                 # Dashboard shell + inlined 88 KB payload
+│   ├── data.json                  # Canonical 88 KB pre-aggregated extract
+│   ├── css/dash.css               # Design tokens, light/dark
+│   ├── js/                        # format · charts · panels · guardrails · engine · live
+│   └── data/*.parquet             # Tiered query surface, 61 MB (see below)
 │
 ├── pipeline/                      # Local reproduction harness (no Azure)
 │   ├── download.sh                # Fetch + byte-verify the CMS source
@@ -332,8 +395,13 @@ uv pip install --python .venv-local/bin/python -r requirements-local.txt
 # 4. Rebuild the dashboard payload from the Gold layer
 .venv-local/bin/python pipeline/publish_dashboard.py
 
-# 5. View it
-open docs/index.html          # single self-contained file, no server needed
+# 5. Rebuild the interactive query surface, then prove it matches the payload
+.venv-local/bin/python pipeline/build_explorer_data.py      # ~95s -> docs/data/*.parquet
+.venv-local/bin/python pipeline/verify_explorer_parity.py   # 10 assertions, must PASS
+
+# 6. View it
+open docs/index.html          # narrative renders offline; interaction needs a server
+python3 -m http.server -d docs 8000   # then open http://localhost:8000
 ```
 
 `pipeline/run_local.py` writes a transcript to
@@ -433,7 +501,7 @@ evaluate.
 | Service | URL / Location | Auth |
 | ------- | -------------- | ---- |
 | **Live dashboard** | https://diazsk.github.io/healthcare-lakehouse-azure/ | **None — public, static** |
-| Local dashboard | `open docs/index.html` | None |
+| Local dashboard | `open docs/index.html` (narrative) · `python3 -m http.server -d docs` (+ interaction) | None |
 | marimo (analytics) | http://localhost:2718 | None locally; SP secret only for ADLS |
 | Azure Portal / Databricks / ADLS / Key Vault | *subscription retired* | — |
 
@@ -481,7 +549,8 @@ No secret has ever been committed to this repository — verified across full hi
 .venv-local/bin/python pipeline/export_powerbi.py        # rebuild powerbi/data/
 
 # Dashboards
-open docs/index.html                                     # static, no server
+open docs/index.html                                     # narrative only, no server
+python3 -m http.server -d docs 8000                      # + in-browser SQL
 python3 -m http.server 8765 --directory docs             # or serve it like Pages does
 LAKEHOUSE_LOCAL_ROOT="$PWD/data" marimo edit dashboard/medicare_analytics_dashboard.py
 
