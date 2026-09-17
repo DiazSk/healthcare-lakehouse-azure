@@ -35,10 +35,17 @@
     { key: "alowd",  label: "Medicare allowed",  sql: "SUM(Tot_Mdcr_Alowd_Amt_sum)", format: (v) => F().money(v) },
     { key: "svcs",   label: "Services",          sql: "SUM(Tot_Srvcs_sum)",          format: (v) => F().count(v) },
     { key: "benes",  label: "Beneficiary proxy", sql: "SUM(Tot_Benes_sum)",          format: (v) => F().count(v) },
-    { key: "markup", label: "Markup ratio",
+    // `ratio: true` marks the two measures where SUM/SUM can divide two tiny
+    // numbers at a fine grain (one rare procedure code, a near-zero allowed
+    // amount) and produce an arithmetically correct but startling-looking
+    // value. buildSql carries the row's service volume alongside those two
+    // ONLY -- see the ratio branch below -- so the table can show the
+    // denominator instead of hiding the row. Additive measures have no
+    // equivalent failure mode and get no extra column.
+    { key: "markup", label: "Markup ratio", ratio: true,
       sql: "SUM(Tot_Sbmtd_Chrg_sum) / NULLIF(SUM(Tot_Mdcr_Alowd_Amt_sum), 0)",
       format: (v) => (v == null ? "—" : v.toFixed(2) + "x") },
-    { key: "rate",   label: "Payment rate",
+    { key: "rate",   label: "Payment rate", ratio: true,
       sql: "SUM(Tot_Mdcr_Pymt_Amt_sum) / NULLIF(SUM(Tot_Mdcr_Alowd_Amt_sum), 0)",
       format: (v) => F().pct(v, 1) },
     { key: "geoprem", label: "Geographic premium",
@@ -53,9 +60,13 @@
     const where = (filters || [])
       .filter((f) => f.dim && f.val && f.val !== "all")
       .map((f) => `${f.dim} = ${qlit(f.val)}`);
+    // Never a floor (this project renders thin samples with a badge, it does
+    // not suppress them -- hero 2's badgeH2 is the precedent). Instead, a
+    // ratio measure carries its own denominator's volume along for display.
+    const volume = m.ratio ? ",\n             SUM(Tot_Srvcs_sum) AS _svcs" : "";
     return `
       SELECT ${group},
-             ${m.sql} AS value
+             ${m.sql} AS value${volume}
       FROM cube_full
       ${where.length ? "WHERE " + where.join(" AND ") : ""}
       GROUP BY ${group}
@@ -95,17 +106,30 @@
     renderChart(data, rows, cols, m);
   }
 
+  // Column defs carry their own alignment rather than inferring it from
+  // position ("everything but the last is a label"), which broke the moment a
+  // ratio measure added a second numeric column after the value column.
+  function tableColumns(rows, cols, m) {
+    return [
+      { label: rows, numeric: false, render: (r) => r[rows] },
+      cols ? { label: cols, numeric: false, render: (r) => r[cols] } : null,
+      { label: m.label, numeric: true, render: (r) => m.format(r.value) },
+      // Never labelled as providers -- see the static disclaimer under the
+      // table. This is SUM(Tot_Srvcs_sum) at whatever grain is selected.
+      m.ratio ? { label: "Services at this grain", numeric: true,
+                  render: (r) => F().count(r._svcs) } : null,
+    ].filter(Boolean);
+  }
+
   function renderTable(data, rows, cols, m) {
-    const head = [rows, cols, `${m.label}`].filter(Boolean);
+    const columns = tableColumns(rows, cols, m);
     document.getElementById("pTable").innerHTML =
-      `<thead><tr>${head.map((h, i) =>
-        `<th class="${i < head.length - 1 ? "l" : ""}">${h}</th>`).join("")}</tr></thead>`
-      + `<tbody>${data.slice(0, 200).map((r) => {
-          const cells = [r[rows], cols ? r[cols] : null, m.format(r.value)]
-            .filter((c) => c !== null);
-          return `<tr>${cells.map((c, i) =>
-            `<td class="${i < cells.length - 1 ? "l" : ""}">${c}</td>`).join("")}</tr>`;
-        }).join("")}</tbody>`;
+      `<thead><tr>${columns.map((c) =>
+        `<th class="${c.numeric ? "" : "l"}">${c.label}</th>`).join("")}</tr></thead>`
+      + `<tbody>${data.slice(0, 200).map((r) =>
+          `<tr>${columns.map((c) =>
+            `<td class="${c.numeric ? "" : "l"}">${c.render(r)}</td>`).join("")}</tr>`
+        ).join("")}</tbody>`;
   }
 
   function renderChart(data, rows, cols, m) {
