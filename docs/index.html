@@ -304,9 +304,21 @@ function init() {
   // the panels tagged as responding to it. In live mode viewFromQueries computes
   // every panel regardless, but repainting all six on every select would undo
   // that.
+  /* Hero 3 responds to State and Specialty ONLY in live mode, where
+     addProviderGrain actually filters providers_drug — its chip says so, and
+     without this the chip advertised responsiveness the render withheld: the
+     view held a correct 353-provider AK cohort while the prose still read
+     "across 221,364 providers". In static mode hero 3 genuinely is national,
+     its chip says National, and viewFromPayload has nothing new to show it. */
+  const paintHero3IfLive = v => { if (L.isEnabled()) P.renderHero3(v); };
+
   document.getElementById("fState").onchange = e => {
     F.state = e.target.value;
-    detach(withView(v => { P.renderHero1(v, F); P.renderProviders(v, F, PROV_STATE); }));
+    detach(withView(v => {
+      P.renderHero1(v, F);
+      paintHero3IfLive(v);
+      P.renderProviders(v, F, PROV_STATE);
+    }));
   };
   document.getElementById("fRuca").onchange = e => {
     F.ruca = e.target.value;
@@ -316,6 +328,7 @@ function init() {
     F.spec = e.target.value;
     detach(withView(v => {
       P.renderHero2(v, F);
+      paintHero3IfLive(v);
       P.renderProviders(v, F, PROV_STATE);
       badgeHero2(v);
     }));

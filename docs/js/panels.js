@@ -83,9 +83,7 @@
     document.getElementById("ramp").innerHTML =
       Array.from({ length: 21 }, (_, i) =>
         `<span style="background:${diverging(-1 + i / 10)}"></span>`).join("");
-    document.getElementById("rampScale").textContent =
-      `scale ±${money(bound, 2)} per beneficiary-proxy · actual range `
-      + `${money(lo, 2)} to ${money(hi, 2)} (beyond the scale is clamped)`;
+    document.getElementById("rampScale").textContent = hero1Ramp(drawn, bound, lo, hi);
 
     // tornado: extremes at both ends, by total premium
     const sorted = rows.slice().sort((a, b) => b.premium - a.premium);
@@ -128,15 +126,56 @@
       },
     });
 
+    document.getElementById("h1read").textContent = hero1Read(sorted);
+  }
+
+  /* Every readout below is a pure function of the view so it can be tested at
+     cohort counts the national payload never produces. Static mode always hands
+     these panels the full national arrays, so only live mode reaches the 1- and
+     0-cohort branches — but the branches are chosen from the data, not from the
+     mode, because "which mode am I in" is not something a renderer should know.
+
+     The templates were written against the static payload, where nonpar_stats
+     and the kpi block are national regardless of filter. Live mode recomputes
+     them per filter, which is more correct and which drove the originals into
+     sentences they were never written for: hero 1 naming one state as both
+     extremes with a $0.00 spread between them. */
+  const POLICY = "Geographic adjustment is deliberate Medicare policy (wages and "
+    + "rent differ); the magnitude is what is worth seeing.";
+
+  function hero1Read(sorted) {
+    if (!sorted.length) {
+      return "No state matches this filter, so there is no geographic premium to read.";
+    }
+    if (sorted.length === 1) {
+      // A spread needs two cohorts. Naming the same state as both extremes and
+      // reporting $0.00 between them reads as a broken calculation.
+      const one = sorted[0];
+      return `Reading it: this filter selects a single cohort. ${one.state} bills `
+        + `${money(Math.abs(one.premium))} ${one.premium >= 0 ? "more" : "less"} than the `
+        + `geographically standardized amount for the same work`
+        + `${Number.isFinite(one.perBene)
+            ? ` — ${money(one.perBene, 2)} per beneficiary-proxy` : ""}. `
+        + `Comparing states needs more than one selected, so there is no spread to rank. `
+        + POLICY;
+    }
     const mx = sorted[0], mn = sorted[sorted.length - 1];
-    document.getElementById("h1read").textContent = mx && mn
-      ? `Reading it: ${mx.state} bills ${money(mx.premium)} more than the geographically `
-        + `standardized amount for the same work, while ${mn.state} bills `
-        + `${money(Math.abs(mn.premium))} less — a spread of `
-        + `${money(mx.premium - mn.premium)} attributable to location, not medicine. `
-        + `Geographic adjustment is deliberate Medicare policy (wages and rent differ); `
-        + `the magnitude is what is worth seeing.`
-      : "";
+    return `Reading it: ${mx.state} bills ${money(mx.premium)} more than the geographically `
+      + `standardized amount for the same work, while ${mn.state} bills `
+      + `${money(Math.abs(mn.premium))} less — a spread of `
+      + `${money(mx.premium - mn.premium)} attributable to location, not medicine. `
+      + POLICY;
+  }
+
+  function hero1Ramp(drawn, bound, lo, hi) {
+    // lo/hi come from Math.min/max over `drawn`; at zero rows they are ±Infinity,
+    // which money() renders as an em dash rather than "$Infinity".
+    if (!drawn.length) return "no mapped state matches this filter";
+    if (drawn.length === 1) {
+      return `single cohort · ${money(lo, 2)} per beneficiary-proxy`;
+    }
+    return `scale ±${money(bound, 2)} per beneficiary-proxy · actual range `
+      + `${money(lo, 2)} to ${money(hi, 2)} (beyond the scale is clamped)`;
   }
 
   /* ── HERO 2 ─────────────────────────────────────────────────────────────── */
@@ -224,16 +263,59 @@
       },
     });
 
-    const k = view.kpi;
-    document.getElementById("h2read").textContent =
-      `Reading it: only ${count(k.nonpar_providers)} of ${count(k.n_providers)} providers `
-      + `(${pct(k.nonpar_pct, 3)}) are non-participating. Of ${st.specialties_compared} `
+    document.getElementById("h2read").textContent = hero2Read(view);
+    document.getElementById("h2caveat").textContent = hero2Caveat(view);
+  }
+
+  function hero2Read(view) {
+    const st = view.nonparStats, k = view.kpi;
+    // The national participation scalars are true at every filter, so they open
+    // the sentence in all three branches.
+    const national = `only ${count(k.nonpar_providers)} of ${count(k.n_providers)} providers `
+      + `(${pct(k.nonpar_pct, 3)}) are non-participating`;
+    if (!st.specialties_compared) {
+      return `Reading it: ${national}. No specialty in this filter has providers on both `
+        + `sides of that line, so there is nothing to compare here.`;
+    }
+    if (st.specialties_compared === 1) {
+      // A distribution across a population of one is not a distribution, and the
+      // national sentence explained a phenomenon with zero instances ("0 show
+      // non-participating providers leaving patients with LESS exposure").
+      const d = view.nonpar[0];
+      const dir = d.premium_pct >= 0 ? "MORE" : "LESS";
+      return `Reading it: ${national}. In ${d.specialty}, non-participating providers leave `
+        + `patients with ${pct(Math.abs(d.premium_pct))} ${dir} exposure per beneficiary than `
+        + `their participating peers — ${money(d.exp_n)} against ${money(d.exp_y)} — on `
+        + `${count(d.n_n)} non-participating providers measured against ${count(d.n_y)} `
+        + `participating ones.`;
+    }
+    return `Reading it: ${national}. Of ${st.specialties_compared} `
       + `specialties where both groups appear, ${st.negative} show non-participating providers `
       + `leaving patients with LESS exposure, not more — the opposite of the expected direction. `
       + `The likeliest explanation is case mix rather than generosity: the tiny non-par cohorts `
       + `bill a different, cheaper mix of procedures.`;
-    document.getElementById("h2caveat").textContent =
-      `Why the threshold: all ${st.positive} specialties showing a positive premium rest on `
+  }
+
+  function hero2Caveat(view) {
+    const st = view.nonparStats;
+    if (!st.specialties_compared) return "";
+    if (st.specialties_compared === 1) {
+      const d = view.nonpar[0];
+      if (d.measurable) {
+        return `Why it is not badged: ${count(d.n_n)} non-participating providers is at or above `
+          + `the ${count(st.min_nonpar_providers)} this dashboard treats as a stable denominator, `
+          + `so the ratio is read as a measurement rather than an artifact.`;
+      }
+      // This is the canonical guardrail case (Orthopedic Surgery, n=11). The
+      // number stays on screen, faded and badged -- suppressing it would hide the
+      // very artifact this panel exists to name.
+      return `Why it is badged: ${count(d.n_n)} non-participating providers is too small a `
+        + `denominator for a stable ratio — a handful of unusual bills moves it by hundreds of `
+        + `percent, which is why ${count(st.min_nonpar_providers)} is the floor for treating one `
+        + `as a finding. It is shown faded and labelled rather than hidden, because the `
+        + `denominator artifact is itself the point.`;
+    }
+    return `Why the threshold: all ${st.positive} specialties showing a positive premium rest on `
       + `11 or fewer non-participating providers. Orthopedic Surgery's apparent +2,223% is `
       + `11 providers measured against 20,699 — a denominator artifact, not a finding, which `
       + `is why only the ${st.measurable} specialties with at least `
@@ -304,18 +386,36 @@
       },
     });
 
+    document.getElementById("h3read").textContent = hero3Read(view);
+  }
+
+  function hero3Read(view) {
     const k = view.kpi;
+    if (!k.n_drug_providers) {
+      return "No provider in this filter billed a drug code, so there is no concentration "
+        + "to measure.";
+    }
     const bits = [];
-    if (k.lorenz_top1 !== undefined)
+    if (Number.isFinite(k.lorenz_top1))
       bits.push(`the top 1% of prescribers account for ${pct(k.lorenz_top1)} of it`);
-    if (k.lorenz_top10 !== undefined)
+    if (Number.isFinite(k.lorenz_top10))
       bits.push(`the top 10% for ${pct(k.lorenz_top10)}`);
-    document.getElementById("h3read").textContent =
-      `Reading it: across ${count(k.n_drug_providers)} providers who billed at least one drug code, `
-      + `${bits.join(", and ")}. A Gini of ${k.gini} is extreme concentration — for scale, `
-      + `US household income sits near 0.49. Much of this is structural: infusion-heavy `
-      + `specialties buy and bill expensive biologics, so a few practices carry enormous `
-      + `drug volume legitimately.`;
+    // A cohort of one has no distribution, so the SQL returns no Gini for it.
+    if (!Number.isFinite(k.gini)) {
+      return `Reading it: ${count(k.n_drug_providers)} provider${k.n_drug_providers === 1
+        ? "" : "s"} in this filter billed a drug code — too few for a concentration measure, `
+        + `so no Gini is reported.`;
+    }
+    // "Extreme" is a claim about the number, and a narrower cohort can be far
+    // more even than the national 0.906. Let the number pick its own adjective.
+    const verdict = k.gini >= 0.8 ? "extreme concentration"
+      : k.gini >= 0.5 ? "substantial concentration"
+        : "a relatively even distribution";
+    return `Reading it: across ${count(k.n_drug_providers)} providers who billed at least one `
+      + `drug code, ${bits.join(", and ")}${bits.length ? ". " : ""}A Gini of ${k.gini} is `
+      + `${verdict} — for scale, US household income sits near 0.49. Much of this is `
+      + `structural: infusion-heavy specialties buy and bill expensive biologics, so a few `
+      + `practices carry enormous drug volume legitimately.`;
   }
 
   /* ── HERO 4 ─────────────────────────────────────────────────────────────── */
@@ -598,5 +698,9 @@
     renderKpis: renderStatics,   // alias: the ribbon and header render together
     renderHero1, renderHero2, renderHero3, renderHero4, renderHero5,
     renderProviders, renderStatics, geoByState,
+    // Exported for docs/js/panels.test.js: these are the only DOM-free parts of
+    // this module, and the 1- and 0-cohort prose is otherwise reachable only by a
+    // human clicking through filters on a live page.
+    readouts: { hero1Read, hero1Ramp, hero2Read, hero2Caveat, hero3Read },
   };
 })(window);
