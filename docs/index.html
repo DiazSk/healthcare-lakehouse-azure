@@ -5,9 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Medicare Reimbursement Gap Analyzer — CMS 2023</title>
 <meta name="description" content="Five billing-anomaly insights from 9.66M rows of CMS Medicare physician claims, built on a Bronze/Silver/Gold lakehouse with PySpark and Delta Lake.">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
-        integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
-        crossorigin="anonymous"></script>
+<!-- Chart.js 4.5.1, vendored on purpose. Loading it from a CDN made the entire
+     narrative a single point of failure: on a network that blocks cdn.jsdelivr.net,
+     Chart was undefined, charts.js threw at load, and the cascade emptied the KPI
+     ribbon and removed all 8 charts, leaving only prose. This copy is byte-identical
+     to the CDN's -- verify with
+       openssl dgst -sha384 -binary docs/js/chart.umd.min.js | openssl base64 -A
+     which must print
+       jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ
+     No integrity/crossorigin attributes: both are meaningless for a same-origin file.
+     The static narrative now has zero external dependencies. DuckDB still comes from
+     jsdelivr, but only on demand, and explore mode degrades politely without it. -->
+<script src="js/chart.umd.min.js"></script>
 <link rel="stylesheet" href="css/dash.css">
 </head>
 <body>
