@@ -53,7 +53,7 @@ def test_ignores_null_volumes_without_crashing():
     assert "B" in basket
 
 
-from build_explorer_data import DIMS, build_cohorts, build_cube, tighten
+from build_explorer_data import DIMS, MEASURES, MEASURES_BW, build_cohorts, build_cube, tighten
 
 FACT_COLS = {
     "npi": ["1", "1", "2", "3"],
@@ -132,9 +132,33 @@ def test_tighten_widens_bene_weighted_measures_to_float64():
     # "Chrg_sum"/"Amt_sum", so _MONEY_SUFFIXES alone would miss them and let
     # them fall through to the int64 branch, truncating money to whole
     # dollars.
-    out = tighten(build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"]))
+    out = tighten(build_cube(
+        _full_fact(), [d for d in DIMS if d != "hcpcs_cd"], measures=MEASURES_BW
+    ))
     assert pa.types.is_float64(out.schema.field("bw_sbmtd_sum").type)
     assert pa.types.is_float64(out.schema.field("bw_pymt_sum").type)
+
+
+def test_bw_measures_are_confined_to_cube_dims_not_the_base_measure_set():
+    # Ruling R15: bw_sbmtd/bw_pymt exist only to serve hero 2's exposure,
+    # which is a cube_dims (specialty x is_participating) query -- no other
+    # cube reads them, so they must NOT be part of the base MEASURES list
+    # that every other artifact (cube_code, cube_full, providers, ...) uses
+    # by default. This fails if bw_sbmtd/bw_pymt are ever re-globalised into
+    # MEASURES, which would silently put two float64 columns on cube_full's
+    # 863,230 rows and providers' 1,396,961 rows for nothing.
+    dims = [d for d in DIMS if d != "hcpcs_cd"]
+    with_bw = build_cube(_full_fact(), dims, measures=MEASURES_BW)
+    assert "bw_sbmtd_sum" in with_bw.column_names
+    assert "bw_pymt_sum" in with_bw.column_names
+
+    base = build_cube(_full_fact(), dims)  # default measures= MEASURES
+    assert "bw_sbmtd_sum" not in base.column_names
+    assert "bw_pymt_sum" not in base.column_names
+    assert "bw_sbmtd" not in [name for name, _ in MEASURES], (
+        "bw_sbmtd must stay out of the base MEASURES list -- confine "
+        "bene-weighted measures to cube_dims via MEASURES_BW instead"
+    )
 
 
 def test_bene_weighted_exposure_differs_from_service_weighted():
@@ -155,7 +179,7 @@ def test_bene_weighted_exposure_differs_from_service_weighted():
         "bw_sbmtd": [100.0 * 100, 10.0 * 1],  # Avg_Sbmtd_Chrg x Tot_Benes
         "bw_pymt": [90.0 * 100, 9.0 * 1],     # Avg_Mdcr_Pymt_Amt x Tot_Benes
     })
-    cube = build_cube(t, ["specialty"])
+    cube = build_cube(t, ["specialty"], measures=MEASURES_BW)
     row = cube.to_pylist()[0]
 
     bene_weighted = (row["bw_sbmtd_sum"] - row["bw_pymt_sum"]) / row["Tot_Benes_sum"]

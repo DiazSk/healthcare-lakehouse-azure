@@ -52,14 +52,19 @@ MEASURES = [
     ("Tot_Mdcr_Alowd_Amt", "sum"),
     ("Tot_Mdcr_Pymt_Amt", "sum"),
     ("Tot_Mdcr_Stdzd_Amt", "sum"),
-    # Ruling R13: hero 2's patient exposure is BENEFICIARY-weighted
-    # (04_gold_hero_marts.ipynb cell 5), not service-weighted like
-    # Tot_Sbmtd_Chrg/Tot_Mdcr_Pymt_Amt (= Avg_* x Tot_Srvcs). Products summed
-    # at row grain stay additive through any later GROUP BY, so bw_sbmtd/
-    # bw_pymt are computed once in load_fact() and just summed here.
-    ("bw_sbmtd", "sum"),
-    ("bw_pymt", "sum"),
 ]
+
+# Ruling R15: bene-weighted measures exist SOLELY so hero 2's exposure
+# (SUM(bw_sbmtd)/SUM(Tot_Benes) minus the same for bw_pymt) is reproducible
+# from a cube -- see Ruling R13. The products are additive at row grain, so
+# they survive any GROUP BY untouched. Hero 2 is a (specialty x
+# is_participating) query, i.e. cube_dims only; no other artifact
+# (cube_code, cube_code_h4, cohorts, providers_drug, cube_full, providers)
+# reads them. MEASURES was global for one release and put these two float64
+# columns on cube_full's 863,230 rows and providers' 1,396,961 rows for
+# nothing -- ~35 MB dead weight. Confine them to cube_dims via this separate
+# list instead of re-globalising MEASURES.
+MEASURES_BW = MEASURES + [("bw_sbmtd", "sum"), ("bw_pymt", "sum")]
 
 # Exact distinct-provider counts, at the grains the panel guardrails need.
 # The cubes drop npi, and summing a per-cell count across cells would
@@ -97,9 +102,9 @@ def tighten(table: pa.Table) -> pa.Table:
     return table.cast(pa.schema(fields))
 
 
-def build_cube(fact: pa.Table, dims: list[str]) -> pa.Table:
+def build_cube(fact: pa.Table, dims: list[str], measures: list = MEASURES) -> pa.Table:
     """Group the fact to `dims` and sum every measure."""
-    return tighten(fact.group_by(list(dims)).aggregate(MEASURES))
+    return tighten(fact.group_by(list(dims)).aggregate(measures))
 
 
 def build_cohorts(fact: pa.Table, dim_provider: pa.Table) -> pa.Table:
@@ -271,7 +276,7 @@ def main() -> int:
 
     artifacts = {
         # Tier 1 -- loaded on "Explore" click.
-        "cube_dims": build_cube(fact, dims_no_code),
+        "cube_dims": build_cube(fact, dims_no_code, measures=MEASURES_BW),
         "cube_code": build_cube(fact, code_dims),
         "cube_code_h4": build_cube(h4_fact, code_dims),
         "cohorts": build_cohorts(fact, dim_provider),
