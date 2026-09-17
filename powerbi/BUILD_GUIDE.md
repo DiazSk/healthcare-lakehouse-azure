@@ -117,7 +117,7 @@ bottom. Slicers go in a left rail, synced across pages with View → Sync slicer
 
 ## Theme
 
-Save as `powerbi/theme.json` and load via View → Themes → Browse for themes.
+Already saved as [`theme.json`](theme.json) — load it via View → Themes → → Browse for themes. Reproduced here for reference.
 These are the same validated tokens the static dashboard uses, so the two surfaces
 match.
 
