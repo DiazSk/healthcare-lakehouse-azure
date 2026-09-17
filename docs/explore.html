@@ -42,6 +42,26 @@
     arbitrary grains cannot be precomputed. Load the provider table for exact provider counts.</p>
 </section>
 
+<section class="card">
+  <div class="eyebrow"><span class="n">SQL</span> Ask your own question</div>
+  <h2>Query the cube directly</h2>
+  <p class="why">DuckDB runs entirely in your browser — nothing is uploaded. Two tables are
+    registered, both views read by HTTP range request rather than downloaded whole:
+    <code>cube_full</code> (863,230 rows — every dimension plus <code>hcpcs_cd</code> and the
+    six <code>Tot_*_sum</code> measures) and <code>providers</code> (1,396,961 rows, NPI
+    grain). Measure columns are summed and suffixed <code>_sum</code>.</p>
+  <div class="filters">
+    <div class="f wide">
+      <label for="sqlText">SQL query</label>
+      <textarea id="sqlText" class="sqlbox" rows="6"></textarea>
+    </div>
+    <div class="f"><label>&nbsp;</label><button class="toggle" id="sqlRun" type="button">Run query</button></div>
+    <p class="hint" id="sqlStatus">SELECT and WITH queries only, capped at 5,000 rows.</p>
+  </div>
+  <div class="filters" id="sqlExamples"></div>
+  <div class="tblwrap"><table id="sqlTable"></table></div>
+</section>
+
 </div>
 <script src="js/format.js"></script>
 <script src="js/charts.js"></script>

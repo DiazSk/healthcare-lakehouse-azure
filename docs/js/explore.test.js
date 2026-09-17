@@ -200,3 +200,58 @@ test("a slow query that errors after a fast success does not overwrite the statu
     delete global.document;
   }
 });
+
+/* Task 10: the SQL box. isReadOnly and wrapForCap are the two pieces of string
+   logic standing between a visitor's free-form query and what DuckDB actually
+   runs -- see the controller notes' item 4 (stacked statements) and item 3
+   (the row cap must bound the fetch, not just the render). */
+
+test("isReadOnly accepts a bare SELECT and a bare WITH", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("SELECT 1"), true);
+  assert.equal(isReadOnly("WITH x AS (SELECT 1) SELECT * FROM x"), true);
+});
+
+test("isReadOnly accepts a single trailing semicolon", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("SELECT 1;"), true);
+  assert.equal(isReadOnly("SELECT 1;\n"), true);
+});
+
+test("isReadOnly rejects a stacked statement after a valid one", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("SELECT 1; DROP TABLE cube_full"), false);
+});
+
+test("isReadOnly rejects anything not starting with SELECT/WITH", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("DROP TABLE cube_full"), false);
+  assert.equal(isReadOnly("DELETE FROM cube_full"), false);
+});
+
+test("isReadOnly strips line and block comments before checking", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("-- comment\nSELECT 1"), true);
+  assert.equal(isReadOnly("/* comment */ SELECT 1"), true);
+  // A comment cannot be used to hide a stacked statement.
+  assert.equal(isReadOnly("SELECT 1; /* comment */ DROP TABLE cube_full"), false);
+});
+
+test("wrapForCap wraps a plain SELECT in a LIMIT-ed CTE", () => {
+  const { wrapForCap } = load();
+  const sql = wrapForCap("SELECT * FROM cube_full");
+  assert.match(sql, /^WITH __sql_box AS \(SELECT \* FROM cube_full\) SELECT \* FROM __sql_box LIMIT 5001$/);
+});
+
+test("wrapForCap nests a query that already starts with WITH", () => {
+  const { wrapForCap } = load();
+  const sql = wrapForCap("WITH x AS (SELECT 1 AS v) SELECT * FROM x");
+  assert.match(sql, /^WITH __sql_box AS \(WITH x AS \(SELECT 1 AS v\) SELECT \* FROM x\) SELECT \* FROM __sql_box LIMIT 5001$/);
+});
+
+test("wrapForCap drops a trailing semicolon before wrapping", () => {
+  const { wrapForCap } = load();
+  const sql = wrapForCap("SELECT 1;");
+  assert.doesNotMatch(sql, /;\)/);
+  assert.match(sql, /^WITH __sql_box AS \(SELECT 1\) SELECT \* FROM __sql_box LIMIT 5001$/);
+});

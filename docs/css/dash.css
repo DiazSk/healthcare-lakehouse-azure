@@ -92,6 +92,9 @@
   .filters .hint { color: var(--ink-muted); font-size: 12px; margin-left: auto;
     max-width: 44ch; text-align: right; }
   .filters .note { color: var(--ink-muted); font-size: 12px; max-width: 30ch; }
+  .filters .f.wide { flex: 1 1 100%; }
+  .sqlbox { width: 100%; font: 13px ui-monospace, monospace; background: var(--plane);
+    color: var(--ink-1); border: 1px solid var(--axis); border-radius: 7px; padding: 10px; }
 
   /* cards */
   .card { background: var(--surface-1); border: 1px solid var(--border);

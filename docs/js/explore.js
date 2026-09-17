@@ -223,13 +223,143 @@
     } catch (err) {
       status.textContent = `Could not load the query engine: ${err.message}`;
     }
+    initSql();
+  }
+
+  const SQL_MAX_ROWS = 5000;
+  const SQL_TIMEOUT_MS = 5000;
+
+  const SQL_EXAMPLES = [
+    {
+      label: "Top specialties by markup",
+      sql: `SELECT specialty,
+       SUM(Tot_Sbmtd_Chrg_sum) / SUM(Tot_Mdcr_Alowd_Amt_sum) AS markup,
+       SUM(Tot_Srvcs_sum) AS services
+FROM cube_full
+GROUP BY 1
+HAVING SUM(Tot_Srvcs_sum) > 100000
+ORDER BY markup DESC
+LIMIT 20`,
+    },
+    {
+      label: "Facility vs office, one code",
+      sql: `SELECT place_of_srvc,
+       SUM(Tot_Mdcr_Pymt_Amt_sum) / SUM(Tot_Srvcs_sum) AS pymt_per_service,
+       SUM(Tot_Srvcs_sum) AS services
+FROM cube_full
+WHERE hcpcs_cd = '66984'
+GROUP BY 1`,
+    },
+    {
+      label: "Geographic premium by state",
+      sql: `SELECT state_abrvtn,
+       SUM(Tot_Mdcr_Pymt_Amt_sum) - SUM(Tot_Mdcr_Stdzd_Amt_sum) AS geo_premium
+FROM cube_full
+WHERE in_top50_basket
+GROUP BY 1
+ORDER BY geo_premium DESC`,
+    },
+  ];
+
+  /* DuckDB-WASM is sandboxed in the browser, so this is UX rather than security:
+     it turns "why did nothing happen" into a clear message. */
+  function isReadOnly(text) {
+    const stripped = text
+      .replace(/--[^\n]*/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .trim();
+    if (!/^(select|with)\b/i.test(stripped)) return false;
+    // A single trailing semicolon is fine; anything else after stripping it
+    // means stacked statements (e.g. "SELECT 1; DROP TABLE cube_full").
+    return !stripped.replace(/;\s*$/, "").includes(";");
+  }
+
+  // Wraps the query so DuckDB pushes the LIMIT down instead of the browser
+  // materialising every row before we slice it -- SELECT * FROM cube_full is
+  // 863,230 rows and would otherwise freeze the tab. A CTE body may itself
+  // start with WITH, so this nests fine for queries that already do.
+  function wrapForCap(text) {
+    const trimmed = text.trim().replace(/;\s*$/, "");
+    return `WITH __sql_box AS (${trimmed}) SELECT * FROM __sql_box LIMIT ${SQL_MAX_ROWS + 1}`;
+  }
+
+  async function runSql(text) {
+    if (!isReadOnly(text)) {
+      return { rows: [], ms: 0, error: "Only SELECT and WITH queries are allowed here." };
+    }
+    const t0 = performance.now();
+    try {
+      const rows = await Promise.race([
+        E().query(wrapForCap(text)),
+        // ponytail: Promise.race abandons the wait, it does not cancel the
+        // query -- DuckDB keeps running it in the worker. The LIMIT pushdown
+        // above is what actually keeps a runaway query cheap; this timeout is
+        // only a backstop so a slow query doesn't hang the status line.
+        new Promise((_, rej) =>
+          setTimeout(() => rej(new Error(
+            `Query exceeded ${SQL_TIMEOUT_MS / 1000}s — try narrowing it with a WHERE clause.`)),
+            SQL_TIMEOUT_MS)),
+      ]);
+      return { rows, ms: Math.round(performance.now() - t0), error: null };
+    } catch (err) {
+      return { rows: [], ms: Math.round(performance.now() - t0), error: err.message };
+    }
+  }
+
+  function renderSqlTable(rows) {
+    const el = document.getElementById("sqlTable");
+    if (!rows.length) { el.innerHTML = ""; return; }
+    const cols = Object.keys(rows[0]);
+    const shown = rows.slice(0, SQL_MAX_ROWS);
+    const fmt = (v) =>
+      v === null || v === undefined ? "—"
+      : typeof v === "number" ? (Number.isInteger(v) ? F().count(v) : v.toFixed(2))
+      : String(v);
+    el.innerHTML =
+      `<thead><tr>${cols.map((c) => `<th class="l">${c}</th>`).join("")}</tr></thead>`
+      + `<tbody>${shown.map((r) =>
+          `<tr>${cols.map((c) => {
+            const v = r[c];
+            const num = typeof v === "number";
+            return `<td class="${num ? "" : "l"}">${fmt(v)}</td>`;
+          }).join("")}</tr>`).join("")}</tbody>`;
+  }
+
+  function initSql() {
+    const box = document.getElementById("sqlText");
+    const status = document.getElementById("sqlStatus");
+    box.value = SQL_EXAMPLES[0].sql;
+
+    document.getElementById("sqlExamples").innerHTML = SQL_EXAMPLES.map((ex, i) =>
+      `<button class="toggle" data-ex="${i}" type="button">${ex.label}</button>`).join("");
+    document.querySelectorAll("#sqlExamples button").forEach((b) => {
+      b.onclick = () => { box.value = SQL_EXAMPLES[+b.dataset.ex].sql; };
+    });
+
+    document.getElementById("sqlRun").onclick = async () => {
+      status.textContent = "Running…";
+      const { rows, ms, error } = await runSql(box.value);
+      if (error) {
+        status.textContent = error;      // DuckDB's messages are good; show them verbatim
+        renderSqlTable([]);
+        return;
+      }
+      const over = rows.length > SQL_MAX_ROWS;
+      const capped = over ? ` (showing the first ${F().count(SQL_MAX_ROWS)})` : "";
+      status.textContent = `${F().count(over ? SQL_MAX_ROWS : rows.length)} rows in ${ms} ms${capped}`;
+      renderSqlTable(rows);
+    };
   }
 
   root.MD = root.MD || {};
   // chartLabel is exported for docs/js/explore.test.js, the same reason
   // live.js exports renderSeam: a pure helper worth a direct unit test even
   // though callers outside this file only need buildSql/run.
-  root.MD.explore = { DIMENSIONS, MEASURES, buildSql, run, chartLabel };
+  // wrapForCap is exported alongside isReadOnly for the same reason as
+  // chartLabel above: pure string logic worth testing directly from node.
+  root.MD.explore = {
+    DIMENSIONS, MEASURES, buildSql, run, chartLabel, runSql, isReadOnly, wrapForCap,
+  };
   // Guarded so this file stays node-loadable for docs/js/explore.test.js, which
   // stubs window without a document.
   if (typeof document !== "undefined") {
