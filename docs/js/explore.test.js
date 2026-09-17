@@ -255,3 +255,47 @@ test("wrapForCap drops a trailing semicolon before wrapping", () => {
   assert.doesNotMatch(sql, /;\)/);
   assert.match(sql, /^WITH __sql_box AS \(SELECT 1\) SELECT \* FROM __sql_box LIMIT 5001$/);
 });
+
+/* Fix round 1 (Task 10 review F1/F2): isReadOnly and wrapForCap each did
+   their own ad-hoc trimming and disagreed with each other. These tests check
+   the AGREEMENT property that broke -- both functions must treat the same
+   input the same way -- not just each function in isolation, which is what
+   let the drift through the first time. The real correctness claim (that the
+   accepted queries also execute against DuckDB without a parser error) is
+   verified separately in the browser; a node-level string check on
+   wrapForCap's output can't see DuckDB's parser. */
+
+test("a semicolon inside a string literal is not treated as a stacked statement", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("SELECT ';' AS x"), true);
+});
+
+test("wrapForCap preserves a string literal's real semicolon, not a blanked one", () => {
+  const { wrapForCap } = load();
+  const sql = wrapForCap("SELECT ';' AS x");
+  assert.match(sql, /^WITH __sql_box AS \(SELECT ';' AS x\) SELECT \* FROM __sql_box LIMIT 5001$/);
+});
+
+test("a trailing comment after the semicolon is accepted, not just a bare one", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("SELECT 1;   -- comment"), true);
+});
+
+test("wrapForCap drops a trailing comment so it cannot swallow the wrapper's closing paren", () => {
+  const { wrapForCap } = load();
+  const sql = wrapForCap("SELECT 1;   -- comment");
+  assert.match(sql, /^WITH __sql_box AS \(SELECT 1\) SELECT \* FROM __sql_box LIMIT 5001$/);
+});
+
+test("isReadOnly and wrapForCap agree on where the statement ends", () => {
+  const { isReadOnly, wrapForCap } = load();
+  for (const q of ["SELECT ';' AS x", "SELECT 1;   -- comment", "SELECT 1;", "SELECT 1"]) {
+    assert.equal(isReadOnly(q), true, `expected accepted: ${q}`);
+    assert.doesNotMatch(wrapForCap(q), /;\s*\)/, `wrapper must not carry a stray ';' before ): ${q}`);
+  }
+});
+
+test("a stacked statement is still rejected (no regression from the shared normalize)", () => {
+  const { isReadOnly } = load();
+  assert.equal(isReadOnly("SELECT 1; DROP TABLE cube_full"), false);
+});

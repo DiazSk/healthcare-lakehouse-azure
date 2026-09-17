@@ -261,26 +261,50 @@ ORDER BY geo_premium DESC`,
     },
   ];
 
+  // Fix round 1 (Task 10 review F1/F2): isReadOnly and wrapForCap each did
+  // their own ad-hoc trimming and disagreed with each other -- isReadOnly
+  // false-rejected a semicolon that was really inside a string literal
+  // (SELECT ';' AS x), and wrapForCap left a trailing comment in place before
+  // stripping the semicolon, so a comment at the very end of the query ate
+  // the cap wrapper's closing paren. Both now go through one normalize().
+  function stripComments(text) {
+    return text.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  }
+
+  // SQL escapes a quote inside a string literal by doubling it (''). Blanking
+  // a literal to a same-shaped stand-in is for SCANNING only -- it is never
+  // sent to DuckDB -- so a semicolon or comment marker inside user data is
+  // never mistaken for SQL syntax.
+  function blankStrings(text) {
+    return text.replace(/'(?:[^']|'')*'/g, "''");
+  }
+
+  // The text DuckDB will actually run: comments and a single trailing
+  // semicolon removed. Comments carry no semantic meaning, so dropping them
+  // changes nothing DuckDB would execute, and it's what makes the cap
+  // wrapper's closing paren safe from a trailing "-- comment".
+  function normalize(text) {
+    return stripComments(text).trim().replace(/;\s*$/, "").trim();
+  }
+
   /* DuckDB-WASM is sandboxed in the browser, so this is UX rather than security:
      it turns "why did nothing happen" into a clear message. */
   function isReadOnly(text) {
-    const stripped = text
-      .replace(/--[^\n]*/g, "")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .trim();
-    if (!/^(select|with)\b/i.test(stripped)) return false;
-    // A single trailing semicolon is fine; anything else after stripping it
-    // means stacked statements (e.g. "SELECT 1; DROP TABLE cube_full").
-    return !stripped.replace(/;\s*$/, "").includes(";");
+    const real = normalize(text);
+    if (!/^(select|with)\b/i.test(real)) return false;
+    // Scan a string-blanked copy for a stacked statement so a semicolon
+    // inside a literal is never counted as one (e.g. SELECT ';' AS x).
+    return !blankStrings(real).includes(";");
   }
 
   // Wraps the query so DuckDB pushes the LIMIT down instead of the browser
   // materialising every row before we slice it -- SELECT * FROM cube_full is
   // 863,230 rows and would otherwise freeze the tab. A CTE body may itself
-  // start with WITH, so this nests fine for queries that already do.
+  // start with WITH, so this nests fine for queries that already do. Uses
+  // the same normalize() as isReadOnly -- never the string-blanked copy --
+  // so the query DuckDB runs still has its real string contents.
   function wrapForCap(text) {
-    const trimmed = text.trim().replace(/;\s*$/, "");
-    return `WITH __sql_box AS (${trimmed}) SELECT * FROM __sql_box LIMIT ${SQL_MAX_ROWS + 1}`;
+    return `WITH __sql_box AS (${normalize(text)}) SELECT * FROM __sql_box LIMIT ${SQL_MAX_ROWS + 1}`;
   }
 
   async function runSql(text) {
