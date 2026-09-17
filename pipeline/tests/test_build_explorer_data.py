@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -50,3 +51,75 @@ def test_ignores_null_volumes_without_crashing():
                   "Tot_Srvcs": pa.array([None, 7], pa.int64())})
     basket = resolve_top50_basket(t)
     assert "B" in basket
+
+
+from build_explorer_data import DIMS, build_cohorts, build_cube, tighten
+
+FACT_COLS = {
+    "npi": ["1", "1", "2", "3"],
+    "specialty": ["Cardiology"] * 3 + ["Podiatry"],
+    "provider_tier": ["Physician (MD/DO)"] * 4,
+    "state_abrvtn": ["NY", "NY", "CA", "CA"],
+    "ruca_bucket": ["Urban"] * 4,
+    "is_rural": [False] * 4,
+    "is_participating": [True, True, True, False],
+    "hcpcs_cd": ["99213", "99214", "99213", "99213"],
+    "is_drug": [False] * 4,
+    "place_of_srvc": ["O", "F", "O", "O"],
+    "Tot_Benes": [11, 12, 13, 14],
+    "Tot_Srvcs": [100, 200, 300, 400],
+    "Tot_Sbmtd_Chrg": [1000.0, 2000.0, 3000.0, 4000.0],
+    "Tot_Mdcr_Alowd_Amt": [500.0, 600.0, 700.0, 800.0],
+    "Tot_Mdcr_Pymt_Amt": [400.0, 500.0, 600.0, 700.0],
+    "Tot_Mdcr_Stdzd_Amt": [390.0, 490.0, 590.0, 690.0],
+}
+
+
+def _full_fact():
+    t = pa.table(FACT_COLS)
+    return t.append_column(
+        "in_top50_basket", pa.array([True, False, True, True])
+    )
+
+
+def test_cube_dims_keeps_basket_as_a_grouping_column():
+    cube = build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"])
+    assert "in_top50_basket" in cube.column_names, (
+        "cube_dims drops hcpcs_cd, so the basket flag must be a GROUP BY key or "
+        "hero 1 becomes unreproducible"
+    )
+    assert "hcpcs_cd" not in cube.column_names
+
+
+def test_cube_dims_preserves_totals_exactly():
+    cube = build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"])
+    assert pc.sum(cube["Tot_Mdcr_Pymt_Amt_sum"]).as_py() == pytest.approx(2200.0)
+    assert pc.sum(cube["Tot_Srvcs_sum"]).as_py() == 1000
+
+
+def test_cube_dims_separates_basket_from_non_basket_rows():
+    cube = build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"])
+    in_basket = cube.filter(pc.equal(cube["in_top50_basket"], True))
+    # Rows 0, 2, 3 are in the basket: 400 + 600 + 700
+    assert pc.sum(in_basket["Tot_Mdcr_Pymt_Amt_sum"]).as_py() == pytest.approx(1700.0)
+
+
+def test_tighten_dictionary_encodes_dimensions_and_widens_money():
+    out = tighten(build_cube(_full_fact(), [d for d in DIMS if d != "hcpcs_cd"]))
+    assert pa.types.is_dictionary(out.schema.field("specialty").type)
+    assert pa.types.is_float64(out.schema.field("Tot_Mdcr_Pymt_Amt_sum").type)
+    assert pa.types.is_int64(out.schema.field("Tot_Srvcs_sum").type)
+
+
+def test_cohorts_counts_distinct_providers_not_rows():
+    cohorts = build_cohorts(_full_fact())
+    h2 = cohorts.filter(pc.equal(cohorts["grain"], "h2")).to_pylist()
+    cardio = [r for r in h2 if r["k1"] == "Cardiology" and r["k2"] == "True"]
+    assert len(cardio) == 1
+    # npi "1" appears twice in Cardiology; it must count once.
+    assert cardio[0]["n_providers"] == 2
+
+
+def test_cohorts_covers_all_four_panel_grains():
+    grains = set(build_cohorts(_full_fact())["grain"].to_pylist())
+    assert grains == {"h1", "h2", "h4", "h5"}
