@@ -1,0 +1,15 @@
+# Local reproduction of the pipeline WITHOUT Azure.
+#
+# requirements.txt stays the Databricks-side contract; this file is the pinned set
+# that runs the same notebooks on a laptop. Versions are exact because the
+# pyspark <-> delta-spark <-> Java matrix is unforgiving:
+#   - delta-spark 3.3.3 requires pyspark >=3.5.3,<3.6
+#   - pyspark 3.5.x is tested against Python 3.11 (NOT 3.14) and Java 8/11/17
+#   - the Maven coordinate in notebooks/utils/__init__.py must match delta-spark here
+pyspark==3.5.9
+delta-spark==3.3.3
+
+# deltalake >=1.0 changed the API that dashboard/utils/data_loader.py was written against.
+deltalake>=0.18,<1.0
+pandas>=2.2,<3.0
+pyarrow>=15.0

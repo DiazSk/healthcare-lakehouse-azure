@@ -1,9 +1,18 @@
-"""Load Gold Delta tables from ADLS Gen2 into pandas DataFrames.
+"""Load Gold Delta tables into pandas DataFrames.
 
-Uses the `deltalake` Python library so the marimo dashboard does NOT require a
-running Databricks SQL warehouse (saves DBUs). Auth is via Azure SP credentials
-read from environment variables, populated by python-dotenv from a gitignored
-`.env` file at the repo root.
+Two sources, one interface:
+
+* **Local (default when ``LAKEHOUSE_LOCAL_ROOT`` is set)** — reads the Gold tables
+  produced by ``pipeline/run_local.py`` straight off disk. No credentials, no cloud.
+  This is the supported path: the Azure subscription behind the ADLS reader is retired.
+* **ADLS Gen2** — the original path, kept intact. Uses the `deltalake` Python library
+  so the dashboard never needed a Databricks SQL warehouse (saves DBUs). Auth is via
+  Azure SP credentials from environment variables, populated by python-dotenv from a
+  gitignored `.env` file at the repo root.
+
+Set ``DATA_LOADER_STRICT=1`` to turn load failures into exceptions instead of empty
+DataFrames. The publish step sets it, because an empty frame there would silently
+ship an empty dashboard.
 
 Each loader caches its result in module-global state so a hot-reload of a
 marimo cell doesn't re-fetch from ADLS. Set ``DATA_LOADER_FORCE_REFRESH=1``
@@ -76,8 +85,17 @@ def _storage_options() -> dict[str, str]:
     }
 
 
+def _local_root() -> Optional[str]:
+    """Local lakehouse root, if this process is configured for local mode."""
+    root = os.getenv("LAKEHOUSE_LOCAL_ROOT")
+    return root.rstrip("/") if root else None
+
+
 def _gold_uri(table_name: str) -> str:
-    """ABFSS URI for a Gold table in the configured storage account."""
+    """Path or URI for a Gold table — local filesystem, else ABFSS."""
+    root = _local_root()
+    if root:
+        return f"{root}/gold/{table_name}/"
     account = os.getenv("AZURE_STORAGE_ACCOUNT", "sthealthcareplatdev")
     return f"abfss://gold@{account}.dfs.core.windows.net/{table_name}/"
 
@@ -88,20 +106,29 @@ def _load_table(table_name: str, empty_columns: Optional[list[str]] = None) -> p
     if not force and table_name in _CACHE:
         return _CACHE[table_name]
 
+    strict = os.getenv("DATA_LOADER_STRICT") == "1"
+
     if not _DELTALAKE:
-        logger.warning("deltalake not installed; returning empty DataFrame for %s", table_name)
+        msg = f"deltalake not installed; cannot load {table_name}"
+        if strict:
+            raise RuntimeError(msg)
+        logger.warning("%s — returning empty DataFrame", msg)
         return pd.DataFrame(columns=empty_columns or [])
 
     try:
-        opts = _storage_options()
+        # Local mode needs no credentials; ADLS does.
+        opts = None if _local_root() else _storage_options()
         dt = DeltaTable(_gold_uri(table_name), storage_options=opts)
         df = dt.to_pandas()
         _CACHE[table_name] = df
         return df
-    except Exception as exc:  # noqa: BLE001 — we want to fail gracefully in the UI
+    except Exception as exc:  # noqa: BLE001 — the UI degrades instead of crashing
+        if strict:
+            raise
         logger.warning(
             "Failed to load Gold table %s: %s. "
-            "Run the PySpark notebooks first or check .env auth.",
+            "Set LAKEHOUSE_LOCAL_ROOT and run pipeline/run_local.py, "
+            "or check .env auth for ADLS.",
             table_name, exc,
         )
         return pd.DataFrame(columns=empty_columns or [])

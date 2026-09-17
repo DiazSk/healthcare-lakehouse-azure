@@ -21,3 +21,14 @@ __pycache__/
 
 # Marimo
 __marimo__/
+
+# Local lakehouse data (rebuilt from public CMS source via pipeline/download.sh)
+data/
+powerbi/data/
+*.parquet
+
+# Local venv
+.venv-local/
+
+# graft tool cache
+graft/.cache/

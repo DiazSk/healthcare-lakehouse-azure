@@ -21,6 +21,8 @@ from pathlib import Path
 
 from pyspark.sql import SparkSession
 
+from .paths import LOCAL_MODE
+
 # ── Soft import of python-dotenv ────────────────────────────────────────────
 # If dotenv is unavailable (e.g., on a stock Databricks runtime where it
 # wasn't pip-installed), we silently skip it and rely on real env vars.
@@ -63,7 +65,16 @@ def configure_adls_oauth(spark: SparkSession, dbutils) -> None:
 
     `dbutils` is the Databricks runtime singleton — passed in so this helper
     stays unit-testable outside Databricks (mock dbutils).
+
+    No-op in local mode: there is no ADLS to authenticate against when
+    `LAKEHOUSE_LOCAL_ROOT` is set, so every notebook can keep calling this
+    unchanged. Returning early (rather than making the notebooks conditional)
+    keeps the Azure and local code paths identical.
     """
+    if LOCAL_MODE:
+        print("Local mode — skipping ADLS OAuth (reading from LAKEHOUSE_LOCAL_ROOT).")
+        return
+
     _load_env_file()
 
     storage_account = _require("AZURE_STORAGE_ACCOUNT")
