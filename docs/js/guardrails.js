@@ -15,7 +15,7 @@
   const WEAK = 11;
 
   function reliability(n) {
-    if (n === null || n === undefined || !isFinite(n)) return "very-thin";
+    if (!Number.isFinite(n)) return "very-thin";
     if (n >= RELIABLE) return "ok";
     if (n >= WEAK) return "thin";
     return "very-thin";
@@ -24,7 +24,7 @@
   function badgeText(n) {
     const level = reliability(n);
     if (level === "ok") return "";
-    const shown = isFinite(n) ? n : 0;
+    const shown = Number.isFinite(n) ? n : 0;
     return level === "thin"
       ? `n=${shown} · thin sample`
       : `n=${shown} · below CMS's suppression floor`;

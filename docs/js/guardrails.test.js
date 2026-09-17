@@ -54,3 +54,20 @@ test("missing cohort size is treated as unreliable, not reliable", () => {
   assert.equal(G.reliability(undefined), "very-thin");
   assert.equal(G.reliability(NaN), "very-thin");
 });
+
+test("badgeText renders n=0 for all missing cohort values, never the literal type names", () => {
+  // Reverting to global isFinite() must fail this test. A SQL LEFT JOIN that finds
+  // no matching cohort row yields null, so this is a real case.
+  const nullBadge = G.badgeText(null);
+  const undefBadge = G.badgeText(undefined);
+  const nanBadge = G.badgeText(NaN);
+
+  assert.match(nullBadge, /n=0/);
+  assert.doesNotMatch(nullBadge, /null/i);
+
+  assert.match(undefBadge, /n=0/);
+  assert.doesNotMatch(undefBadge, /undefined/i);
+
+  assert.match(nanBadge, /n=0/);
+  assert.doesNotMatch(nanBadge, /nan/i);
+});
