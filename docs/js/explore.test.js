@@ -98,3 +98,105 @@ test("a filter of 'all' or an empty dim is dropped, not turned into a WHERE clau
   });
   assert.doesNotMatch(sql, /WHERE/);
 });
+
+/* ── chart labels with a column dimension set (F1) ─────────────────────────
+   Reproduced live: rows=specialty, cols=state_abrvtn, measure=paid returned
+   25 bars with only 11 unique labels -- the same specialty repeated once per
+   state, indistinguishable on the chart even though the table (which renders
+   rows/cols as separate columns) was correct. */
+test("chart label is rows alone when no column dimension is set", () => {
+  const { chartLabel } = load();
+  const label = chartLabel({ specialty: "Cardiology", value: 1 }, "specialty", "");
+  assert.equal(label, "Cardiology");
+});
+
+test("chart label qualifies with cols so repeated rows values are distinguishable", () => {
+  const { chartLabel } = load();
+  const a = chartLabel({ specialty: "Internal Medicine", state_abrvtn: "NY", value: 1 },
+    "specialty", "state_abrvtn");
+  const b = chartLabel({ specialty: "Internal Medicine", state_abrvtn: "CA", value: 2 },
+    "specialty", "state_abrvtn");
+  assert.notEqual(a, b);
+  assert.match(a, /NY/);
+  assert.match(b, /CA/);
+});
+
+/* ── run()'s stale-response guard ──────────────────────────────────────────
+   Fix round 2, F2: run() paints unconditionally when its query resolves, so a
+   slow response landing after a faster, newer one used to overwrite the
+   table with stale data. The fix is the same monotonic-counter shape as
+   live.js's renderSeam. Exercising it needs a minimal DOM, since run() (unlike
+   live.js's pure viewFromQueries) reads/writes elements directly -- so this
+   loader stubs just enough of `document` for run() and its two renderers to
+   complete without touching a real browser. isSupported() is false so init()
+   bails out immediately after wiring pRun/theme, and never calls run() or
+   registers pFilterDim.onchange itself; the test calls run() directly. */
+function loadWithDom() {
+  const els = {
+    pRows: { value: "specialty" }, pCols: { value: "" }, pMeasure: { value: "paid" },
+    pFilterDim: { value: "" }, pFilterVal: { value: "" },
+    pStatus: { textContent: "" }, pTable: { innerHTML: "" },
+    pChart: {}, pRun: {}, theme: {},
+  };
+  const resolvers = [];
+  const win = {
+    MD: {
+      engine: {
+        isSupported: () => false,
+        query: () => new Promise((resolve) => resolvers.push(resolve)),
+      },
+      format: { money: (v) => String(v), count: (v) => String(v), pct: (v) => String(v) },
+      charts: {
+        readTokens: () => {}, tokens: () => ({ s1: "x" }),
+        axisOpts: () => ({}), legendOpts: () => ({}), tooltipOpts: () => ({}),
+        mount: () => {},
+      },
+    },
+  };
+  global.window = win;
+  global.document = { getElementById: (id) => els[id] };
+  eval(SRC);
+  // NOT deleted here -- run() is called after loadWithDom() returns and still
+  // needs `document` to exist. Each test deletes it in a `finally`, so a
+  // later plain load() (which expects `typeof document === "undefined"`)
+  // never inherits it.
+  return { run: win.MD.explore.run, els, resolvers };
+}
+
+test("a slow query resolving after a fast one does not paint", async () => {
+  const { run, els, resolvers } = loadWithDom();
+  try {
+    els.pRows.value = "specialty";
+    const slow = run();                    // request #1: resolves last
+    els.pRows.value = "state_abrvtn";
+    const fast = run();                    // request #2: resolves first
+
+    resolvers[1]([{ state_abrvtn: "NY", value: 2 }]);
+    await fast;
+    resolvers[0]([{ specialty: "Cardiology", value: 1 }]);
+    await slow;
+
+    assert.match(els.pTable.innerHTML, /NY/);
+    assert.doesNotMatch(els.pTable.innerHTML, /Cardiology/);
+  } finally {
+    delete global.document;
+  }
+});
+
+test("a slow query that errors after a fast success does not overwrite the status line", async () => {
+  const { run, els, resolvers } = loadWithDom();
+  try {
+    const slow = run();                    // request #1: rejects last
+    const fast = run();                    // request #2: resolves first
+
+    resolvers[1]([{ specialty: "Cardiology", value: 1 }]);
+    await fast;
+    const statusAfterFast = els.pStatus.textContent;
+    resolvers[0](Promise.reject(new Error("boom")));
+    await slow;
+
+    assert.equal(els.pStatus.textContent, statusAfterFast);
+  } finally {
+    delete global.document;
+  }
+});

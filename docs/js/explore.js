@@ -79,7 +79,14 @@
       items.map((d) => `<option value="${d.key ?? d}">${d.label ?? d}</option>`).join("");
   }
 
+  // Monotonic request counter, the same shape live.js's renderSeam uses for the
+  // findings page (see its "a stale view never paints over a newer one" tests).
+  // The explorer has one paint target rather than six, so a bare counter check
+  // before painting is enough -- no pending-paint queue needed.
+  let _seq = 0;
+
   async function run() {
+    const seq = ++_seq;
     const rows = document.getElementById("pRows").value;
     const cols = document.getElementById("pCols").value;
     const measure = document.getElementById("pMeasure").value;
@@ -95,9 +102,12 @@
     try {
       data = await E().query(buildSql({ rows, cols, measure, filters }));
     } catch (err) {
+      if (seq !== _seq) return; // a newer request already resolved
       status.textContent = `Query failed: ${err.message}`;
       return;
     }
+    if (seq !== _seq) return; // superseded -- a newer run() already painted
+
     const ms = Math.round(performance.now() - t0);
     status.textContent = `${F().count(data.length)} groups in ${ms} ms`;
 
@@ -132,13 +142,24 @@
         ).join("")}</tbody>`;
   }
 
+  // With a column dimension set, cube_full legitimately returns several rows
+  // per `rows` value (one per cols value), so the top-25 slice can contain the
+  // same rows label repeated at different heights with nothing to tell them
+  // apart. Budget the existing 28-char cap across both values rather than
+  // labelling with `rows` alone and leaving `cols` invisible.
+  function chartLabel(r, rows, cols) {
+    if (!cols) return String(r[rows]).slice(0, 28);
+    const budget = Math.floor((28 - 3) / 2); // " · " separator takes 3
+    return `${String(r[rows]).slice(0, budget)} · ${String(r[cols]).slice(0, budget)}`;
+  }
+
   function renderChart(data, rows, cols, m) {
     const T = C().tokens();
     const top = data.slice(0, 25).reverse();
     C().mount("pChart", {
       type: "bar",
       data: {
-        labels: top.map((r) => String(r[rows]).slice(0, 28)),
+        labels: top.map((r) => chartLabel(r, rows, cols)),
         datasets: [{
           label: m.label, data: top.map((r) => r.value),
           backgroundColor: T.s1, borderWidth: 0, borderRadius: 2,
@@ -188,11 +209,15 @@
       document.getElementById("pFilterDim").onchange = async (ev) => {
         const dim = ev.target.value;
         const sel = document.getElementById("pFilterVal");
-        if (!dim) { sel.innerHTML = '<option value="all">(all)</option>'; return; }
+        // Option(), not template-string markup: values come from a SELECT
+        // DISTINCT over the dataset, and the DOM API sets text/value as data
+        // rather than parsing them as HTML, so there is nothing to escape.
+        sel.innerHTML = "";
+        sel.appendChild(new Option("(all)", "all"));
+        if (!dim) return;
         const vals = await E().query(
           `SELECT DISTINCT ${dim} AS v FROM cube_full WHERE ${dim} IS NOT NULL ORDER BY 1 LIMIT 500`);
-        sel.innerHTML = '<option value="all">(all)</option>' +
-          vals.map((r) => `<option value="${r.v}">${r.v}</option>`).join("");
+        vals.forEach((r) => sel.appendChild(new Option(String(r.v), r.v)));
       };
       await run();
     } catch (err) {
@@ -201,7 +226,10 @@
   }
 
   root.MD = root.MD || {};
-  root.MD.explore = { DIMENSIONS, MEASURES, buildSql, run };
+  // chartLabel is exported for docs/js/explore.test.js, the same reason
+  // live.js exports renderSeam: a pure helper worth a direct unit test even
+  // though callers outside this file only need buildSql/run.
+  root.MD.explore = { DIMENSIONS, MEASURES, buildSql, run, chartLabel };
   // Guarded so this file stays node-loadable for docs/js/explore.test.js, which
   // stubs window without a document.
   if (typeof document !== "undefined") {
