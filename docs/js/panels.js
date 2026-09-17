@@ -6,8 +6,13 @@
 
   const { money, count, pct, inkOn, quantile } = root.MD.format;
   const { tokens, axisOpts, legendOpts, tooltipOpts, mount } = root.MD.charts;
+  const { reliability, opacityFor } = root.MD.guardrails;
   const diverging = (t) => root.MD.format.diverging(t, tokens().div);
   const T = () => tokens();
+  // diverging() returns "rgb(r,g,b)"; the guardrail opacity rides on top of it so
+  // a thin cohort's bar is visibly weaker than a reliable one's.
+  const withAlpha = (c, a) =>
+    a >= 1 ? c : c.replace("rgb(", "rgba(").replace(")", `, ${a})`);
 
   /* ── tile-grid US map layout (row, col) — 50 states + DC ─────────────────── */
   const TILES = {
@@ -137,11 +142,14 @@
   /* ── HERO 2 ─────────────────────────────────────────────────────────────── */
   function renderHero2(view, filters) {
     const st = view.nonparStats;
-    // Only specialties with a real non-par cohort. The excluded ones are not hidden
-    // -- they are named in the caveat line under the chart.
-    const ok = view.nonpar.filter(d => d.measurable)
-      .sort((a, b) => a.premium_pct - b.premium_pct);
     const hi = filters.spec === "all" ? null : filters.spec;
+    // Specialties with a real non-par cohort, PLUS whichever one the filter
+    // selected. Warn, never hide: filtering to Orthopedic Surgery must show its
+    // +2,223% wearing a thin-sample badge, not silently drop the panel's only row.
+    // The unselected exclusions are named in the caveat line under the chart.
+    const ok = view.nonpar.filter(d => d.measurable || d.specialty === hi)
+      .sort((a, b) => a.premium_pct - b.premium_pct);
+    const forced = !!hi && view.nonpar.some(d => d.specialty === hi && !d.measurable);
 
     mount("cNonPar", {
       type: "bar",
@@ -151,7 +159,9 @@
           label: "Patient exposure vs. participating peers",
           data: ok.map(d => d.premium_pct),
           backgroundColor: ok.map(d => hi && d.specialty !== hi
-            ? T().grid : diverging(d.premium_pct > 0 ? 0.75 : -0.75)),
+            ? T().grid
+            : withAlpha(diverging(d.premium_pct > 0 ? 0.75 : -0.75),
+                        opacityFor(reliability(Number(d.n_n))))),
           borderWidth: 0, borderRadius: 2,
         }],
       },
@@ -161,7 +171,8 @@
           legend: legendOpts(false),
           title: { display: true, color: T().ink1, font: { size: 13, weight: "600" },
                    text: `Specialties with at least ${st.min_nonpar_providers} `
-                     + `non-participating providers`,
+                     + `non-participating providers`
+                     + (forced ? ` · plus ${hi}, faded as a thin sample` : ""),
                    align: "start", padding: { bottom: 10 } },
           tooltip: tooltipOpts({
             label: c => ` ${pct(c.raw)} ${c.raw < 0 ? "lower" : "higher"} patient exposure`,
@@ -536,7 +547,10 @@
     document.querySelectorAll("#tProv th").forEach(th => th.onclick = () => {
       const k = th.dataset.k;
       if (state.sort === k) state.dir *= -1;
-      else { state.sort = k; state.dir = typeof view.providers[0][k] === "string" ? 1 : -1; }
+      // Live mode can return an empty cohort (a state x specialty nobody bills a
+      // drug in); the static payload's 200 rows never could.
+      else { state.dir = typeof (view.providers[0] || {})[k] === "string" ? 1 : -1;
+             state.sort = k; }
       state.page = 0; renderProviders(view, filters, state);
     });
 

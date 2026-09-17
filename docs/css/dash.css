@@ -91,6 +91,7 @@
     border: 1px solid var(--axis); border-radius: 7px; padding: 7px 10px; min-width: 165px; }
   .filters .hint { color: var(--ink-muted); font-size: 12px; margin-left: auto;
     max-width: 44ch; text-align: right; }
+  .filters .note { color: var(--ink-muted); font-size: 12px; max-width: 30ch; }
 
   /* cards */
   .card { background: var(--surface-1); border: 1px solid var(--border);

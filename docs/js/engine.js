@@ -39,11 +39,24 @@
   let _db = null;
   let _conn = null;
   let _bootPromise = null;
+  const _tierPromises = {};
   const _loaded = new Set();
   const _progress = [];
 
   function isSupported() {
-    return typeof WebAssembly === "object" && typeof Worker === "function";
+    return typeof WebAssembly === "object" && typeof Worker === "function"
+      // DuckDB arrives via dynamic import() of a cross-origin ES module, which
+      // file:// blocks outright. Reporting false here makes the toggle explain
+      // itself immediately instead of after a multi-second boot timeout.
+      && location.protocol !== "file:";
+  }
+
+  // An un-awaited boot()/loadTier() would otherwise surface as an
+  // unhandledrejection. Swallow it on an internal branch only -- the promise we
+  // hand back still rejects, so failure stays visible to whoever awaits it.
+  function latch(p) {
+    p.catch(() => {});
+    return p;
   }
 
   const status = () => _status;
@@ -51,15 +64,16 @@
   const emit = (phase, loaded, total) =>
     _progress.forEach((cb) => cb({ phase, loaded, total }));
 
-  async function boot() {
+  function boot() {
     if (_bootPromise) return _bootPromise;
     if (!isSupported()) {
       _status = "unavailable";
-      return Promise.reject(new Error("WebAssembly or Web Workers unavailable"));
+      return latch(Promise.reject(
+        new Error("WebAssembly, Web Workers or a non-file:// origin unavailable")));
     }
     _status = "booting";
     emit("engine", 0, 1);
-    _bootPromise = (async () => {
+    _bootPromise = latch((async () => {
       const duckdb = await import(ESM_ENTRY);
       // `new Worker(crossOriginURL)` is blocked outright (not just by CORS) --
       // browsers only allow same-origin worker scripts. The standard duckdb-wasm
@@ -79,14 +93,28 @@
       _status = "unavailable";
       _bootPromise = null;      // allow a later retry
       throw err;
-    });
+    }));
     return _bootPromise;
   }
 
-  async function loadTier(n) {
+  /* Re-entrant on purpose. The `_loaded` set only helps AFTER a load finishes, so
+     two overlapping loadTier(1) calls -- exactly what the live toggle and
+     viewFromQueries produce -- each downloaded all four Parquet files (7.7 MB
+     instead of 3.87) and raced CREATE OR REPLACE TABLE on one connection. Latch
+     the in-flight promise per tier, the way boot() latches _bootPromise. */
+  function loadTier(n) {
     const names = TIERS[n];
-    if (!names) throw new Error(`no such tier: ${n}`);
-    if (names.every((t) => _loaded.has(t))) return;
+    if (!names) return latch(Promise.reject(new Error(`no such tier: ${n}`)));
+    if (names.every((t) => _loaded.has(t))) return Promise.resolve();
+    if (_tierPromises[n]) return _tierPromises[n];
+    _tierPromises[n] = latch(load(n, names).catch((err) => {
+      _tierPromises[n] = null;  // allow a later retry
+      throw err;
+    }));
+    return _tierPromises[n];
+  }
+
+  async function load(n, names) {
     await boot();
 
     // Tier 3 is registered rather than copied: DuckDB range-reads only the row
@@ -112,11 +140,17 @@
   async function query(sql) {
     if (_status !== "ready") await boot();
     const result = await _conn.query(sql);
-    // Arrow -> plain objects. BigInt would break JSON and Chart.js, so narrow it.
+    // Arrow -> plain objects. Two integer shapes have to be narrowed here:
+    // BigInt breaks JSON and Chart.js, and SUM() over a BIGINT column widens to
+    // HUGEINT, which Arrow hands back as a Decimal -- a Uint32Array subclass
+    // whose toString is correct but whose arithmetic and toLocaleString are not
+    // (`0 + benes` string-concatenates; count(benes) prints "824,724,417,0,0,0").
+    // Measured against SUM(Tot_Benes_sum): it poisons hero 1's per-beneficiary
+    // scale and every cohort count that reaches a tooltip.
     return result.toArray().map((row) => {
       const out = {};
       for (const [k, v] of Object.entries(row.toJSON())) {
-        out[k] = typeof v === "bigint" ? Number(v) : v;
+        out[k] = typeof v === "bigint" || ArrayBuffer.isView(v) ? Number(v) : v;
       }
       return out;
     });
