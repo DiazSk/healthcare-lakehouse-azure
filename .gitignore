@@ -46,3 +46,6 @@ context/
 # Personal working material — article drafts, resume copy, interview notes.
 # Mine, not documentation for anyone reading this repo.
 writing/
+
+# Subagent-driven-development scratch: ledger, briefs, review packages.
+.superpowers/
