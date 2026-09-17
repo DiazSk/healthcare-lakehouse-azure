@@ -28,13 +28,21 @@
   const tokens = () => T;
 
   function axisOpts(title, fmt, extra) {
+    // `callback: fmt` with fmt === null does NOT fall back to Chart.js's own
+    // tick formatter -- it explicitly overrides it with null, Chart.js's
+    // callCallback(null, ...) returns undefined for every tick, and the axis
+    // draws no labels at all. Category axes (state codes, HCPCS codes, ...)
+    // pass no formatter on purpose and need Chart.js's default; only set the
+    // key when a formatter is actually supplied.
+    const ticks = { color: T.muted, font: { size: 11 } };
+    if (fmt) ticks.callback = fmt;
     return Object.assign({
       title: title
         ? { display: true, text: title, color: T.ink2, font: { size: 11.5 } }
         : undefined,
       grid: { color: T.grid, drawTicks: false },
       border: { color: T.axis },
-      ticks: { color: T.muted, font: { size: 11 }, callback: fmt },
+      ticks,
     }, extra || {});
   }
 
