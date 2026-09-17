@@ -41,3 +41,4 @@ graft/.cache/
 CLAUDE.md
 context/
 .claude/
+.ignore
