@@ -10,7 +10,7 @@ Interactive Python web dashboard for the CMS *Medicare Physician & Other Practit
 |---|---|
 | `medicare_demo_dashboard.py` | Runs on **synthetic** Gold-shaped data. No Azure auth needed. Use for portfolio reviews and offline smoke tests. |
 | `medicare_analytics_dashboard.py` | Reads the **real Gold Delta tables** from ADLS Gen2 via `deltalake`. Requires `.env` auth and a populated Gold layer. |
-| `utils/theme.py` | Color tokens + Plotly layout — matches `context/ui-context.md` so the Power BI report and marimo dashboard share a visual language. |
+| `utils/theme.py` | Color tokens + Plotly layout, so every serving surface shares one visual language. |
 | `utils/data_loader.py` | `deltalake` → pandas loaders, one per Gold table. Gracefully returns empty DataFrames if Gold isn't reachable. |
 | `utils/synthetic.py` | NumPy/pandas generators that mimic Gold table schemas — keeps the demo's chart code identical to the analytics version. |
 
@@ -75,7 +75,7 @@ The rotated secret should NEVER be committed. `.env` is in `.gitignore`. Run `gi
 
 ## Theme
 
-The color tokens in `utils/theme.py` mirror `context/ui-context.md`:
+The color tokens in `utils/theme.py`:
 
 | Token | Hex | Use |
 |---|---|---|

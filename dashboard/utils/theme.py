@@ -1,4 +1,4 @@
-"""Color tokens + Plotly layout defaults — match `context/ui-context.md`.
+"""Color tokens + Plotly layout defaults shared by every serving surface.
 
 Every chart in the marimo dashboards goes through `apply_theme(fig)` so the
 visual language is consistent with the upcoming Power BI report.

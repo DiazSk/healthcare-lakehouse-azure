@@ -179,7 +179,10 @@ All Azure resources are provisioned by the Terraform code in `infrastructure/`:
 | `azurerm_data_factory`         | `adf-healthcare-plat-dev`     | Phase 1 ingest pipeline                                  |
 | `azurerm_databricks_workspace` | `dbw-healthcare-plat-dev`     | Premium SKU, hosts the PySpark notebooks                 |
 
-**FinOps invariant:** every Databricks cluster MUST be configured to **auto-terminate after exactly 10 minutes** of inactivity (see `context/ARCHITECTURE.md`).
+**FinOps invariant:** every Databricks cluster MUST be configured to **auto-terminate
+after exactly 10 minutes** of inactivity. Other standing invariants: Bronze is append-only
+and never mutated in place, every layer is Delta, and no secret is ever hardcoded — the
+service principal credential is only ever read from the Key-Vault-backed scope.
 
 ---
 
@@ -291,7 +294,6 @@ healthcare-lakehouse-azure/
 │   └── utils/{data_loader,theme,synthetic}.py
 │
 ├── infrastructure/                # Terraform IaC for the Azure path
-├── context/                       # Architecture / standards / progress specs
 ├── requirements.txt               # Databricks-side contract
 ├── requirements-local.txt         # Pinned local set (pyspark 3.5.9 / delta 3.3.3)
 └── data/                          # gitignored — rebuilt by pipeline/download.sh

@@ -32,3 +32,12 @@ powerbi/data/
 
 # graft tool cache
 graft/.cache/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Agent working files — instructions, specs and tooling config for Claude, not
+# public docs. Kept locally; deliberately not part of the published repository.
+CLAUDE.md
+context/
+.claude/
