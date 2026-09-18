@@ -208,6 +208,7 @@
      the toggle can bind window.MD.live at parse time instead of lazily. -->
 <script src="js/engine.js"></script>
 <script src="js/live.js"></script>
+<script src="js/permalink.js"></script>
 <script>
 "use strict";
 const DATA = JSON.parse(document.getElementById("payload").textContent
@@ -310,6 +311,28 @@ function init() {
     Array.from(new Set(DATA.nonpar.map(r => r.specialty))).filter(Boolean).sort(),
     "All specialties");
 
+  // Restore filters from the URL, now that the selects above actually have
+  // options to validate against. A saved value that no longer names a real
+  // option (a stale or mistyped shared link, e.g. #state=ZZ) falls back to
+  // "all" instead of being assigned anyway -- assigning it would silently
+  // blank the select, since the DOM turns an unmatched value into "".
+  const saved = window.MD.permalink.read();
+  const pick = (sel, v, dflt) =>
+    v && [...sel.options].some(o => o.value === v) ? v : dflt;
+  const fStateEl = document.getElementById("fState");
+  const fRucaEl = document.getElementById("fRuca");
+  const fSpecEl = document.getElementById("fSpec");
+  F.state = pick(fStateEl, saved.state, "all");
+  F.ruca = pick(fRucaEl, saved.ruca, "all");
+  F.spec = pick(fSpecEl, saved.spec, "all");
+  fStateEl.value = F.state;
+  fRucaEl.value = F.ruca;
+  fSpecEl.value = F.spec;
+
+  const persist = () =>
+    window.MD.permalink.write({ state: F.state, ruca: F.ruca, spec: F.spec,
+                                 live: L.isEnabled() ? "1" : "" });
+
   // Targeted re-render sets, kept deliberately narrow: each filter repaints only
   // the panels tagged as responding to it. In live mode viewFromQueries computes
   // every panel regardless, but repainting all six on every select would undo
@@ -329,10 +352,12 @@ function init() {
       paintHero3IfLive(v);
       P.renderProviders(v, F, PROV_STATE);
     }));
+    persist();
   };
   document.getElementById("fRuca").onchange = e => {
     F.ruca = e.target.value;
     detach(withView(v => P.renderHero1(v, F)));
+    persist();
   };
   document.getElementById("fSpec").onchange = e => {
     F.spec = e.target.value;
@@ -342,6 +367,7 @@ function init() {
       P.renderProviders(v, F, PROV_STATE);
       badgeHero2(v);
     }));
+    persist();
   };
   document.getElementById("fLive").onclick = async ev => {
     const btn = ev.currentTarget, chipH3 = document.getElementById("chipH3");
@@ -352,6 +378,7 @@ function init() {
       liveStatus.textContent = "";
       chipH3.textContent = "National";
       detach(renderAll());
+      persist();
       return;
     }
     if (!E.isSupported()) {
@@ -376,6 +403,7 @@ function init() {
       chipH3.textContent = "Responds to: State · Specialty";
       // Last, or the tier-2 progress line would be the final word.
       liveStatus.textContent = "Live — querying 9.66M rows in your browser";
+      persist();
     } catch (err) {
       console.warn(err);
       L.disable();
@@ -389,7 +417,21 @@ function init() {
     document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
     detach(renderAll());
   };
-  detach(renderAll());
+
+  // A saved live=1 re-enables live mode by clicking the toggle programmatically
+  // rather than duplicating its body: the click handler's own await renderAll()
+  // becomes the page's one paint, using F as already restored above. If it were
+  // triggered alongside the plain detach(renderAll()) below, the page would
+  // paint twice -- once static, once live -- and the second paint's "Live —
+  // querying..." status would flash the fact that the first was thrown away.
+  // An unsupported browser ignores live=1 silently: the visitor didn't ask for
+  // it, only the shared link did, so it degrades to the static summary rather
+  // than surfacing an error.
+  if (saved.live === "1" && E.isSupported()) {
+    document.getElementById("fLive").click();
+  } else {
+    detach(renderAll());
+  }
 }
 function renderTokensInit() {
   // Honour the OS preference on first paint; the button overrides it afterwards.

@@ -15,6 +15,7 @@
   const E = () => root.MD.engine;
   const F = () => root.MD.format;
   const C = () => root.MD.charts;
+  const PL = () => root.MD.permalink;
 
   const DIMENSIONS = [
     { key: "specialty", label: "Specialty" },
@@ -79,6 +80,14 @@
       items.map((d) => `<option value="${d.key ?? d}">${d.label ?? d}</option>`).join("");
   }
 
+  // A saved value survives only if it still names a real option. Without this,
+  // a stale or mistyped shared link (`#rows=bogus`) sets `sel.value` to a value
+  // with no matching <option>, which the DOM silently turns into "" -- for
+  // rows/cols that unknown key would go straight into GROUP BY and produce a
+  // DuckDB Binder Error on first load, rather than degrading visibly.
+  const pick = (sel, v, dflt) =>
+    v && [...sel.options].some((o) => o.value === v) ? v : dflt;
+
   // Monotonic request counter, the same shape live.js's renderSeam uses for the
   // findings page (see its "a stale view never paints over a newer one" tests).
   // The explorer has one paint target rather than six, so a bare counter check
@@ -90,10 +99,17 @@
     const rows = document.getElementById("pRows").value;
     const cols = document.getElementById("pCols").value;
     const measure = document.getElementById("pMeasure").value;
-    const filters = [{
-      dim: document.getElementById("pFilterDim").value,
-      val: document.getElementById("pFilterVal").value,
-    }];
+    const filterDim = document.getElementById("pFilterDim").value;
+    const filterVal = document.getElementById("pFilterVal").value;
+    const filters = [{ dim: filterDim, val: filterVal }];
+
+    // SQL box text deliberately excluded -- see permalink-notes item 6: a URL
+    // is untrusted input, and the SQL box allows external-URL table functions
+    // (read_csv('https://...')). Sharing a pivot config is safe; sharing
+    // arbitrary SQL would let a crafted link make someone else's browser fetch
+    // an arbitrary origin on open.
+    PL().write({ rows, cols, measure, filterDim, filterVal });
+
     const status = document.getElementById("pStatus");
     status.textContent = "Querying…";
 
@@ -186,6 +202,22 @@
     fill(document.getElementById("pCols"), DIMENSIONS, true);
     fill(document.getElementById("pMeasure"), MEASURES);
     fill(document.getElementById("pFilterDim"), DIMENSIONS, true);
+
+    // Restore rows/cols/measure/filterDim now -- their options are static, all
+    // populated by the fill() calls above. filterVal is NOT restored here: its
+    // options come from an async DISTINCT query keyed off filterDim, which
+    // hasn't run yet, so setting it now would just be silently dropped. See
+    // below, after loadFilterValues.
+    const pRows = document.getElementById("pRows");
+    const pCols = document.getElementById("pCols");
+    const pMeasure = document.getElementById("pMeasure");
+    const pFilterDim = document.getElementById("pFilterDim");
+    const saved = PL().read();
+    pRows.value = pick(pRows, saved.rows, pRows.value);
+    pCols.value = pick(pCols, saved.cols, pCols.value);
+    pMeasure.value = pick(pMeasure, saved.measure, pMeasure.value);
+    pFilterDim.value = pick(pFilterDim, saved.filterDim, pFilterDim.value);
+
     document.getElementById("pRun").onclick = run;
     document.getElementById("theme").onclick = () => {
       const dark = document.documentElement.getAttribute("data-theme") === "dark";
@@ -206,8 +238,9 @@
     try {
       await E().loadTier(3);
       // Populate filter values from the data itself rather than hardcoding.
-      document.getElementById("pFilterDim").onchange = async (ev) => {
-        const dim = ev.target.value;
+      // Pulled out so the permalink restore below can await the same query
+      // the user-driven onchange uses, instead of duplicating it.
+      const loadFilterValues = async (dim) => {
         const sel = document.getElementById("pFilterVal");
         // Option(), not template-string markup: values come from a SELECT
         // DISTINCT over the dataset, and the DOM API sets text/value as data
@@ -219,6 +252,18 @@
           `SELECT DISTINCT ${dim} AS v FROM cube_full WHERE ${dim} IS NOT NULL ORDER BY 1 LIMIT 500`);
         vals.forEach((r) => sel.appendChild(new Option(String(r.v), r.v)));
       };
+      document.getElementById("pFilterDim").onchange = (ev) => loadFilterValues(ev.target.value);
+
+      // filterVal restore happens here, AFTER its options exist: pFilterVal is
+      // populated asynchronously by the DISTINCT query above, keyed off
+      // filterDim. Restoring it any earlier (e.g. alongside rows/cols/measure)
+      // would set .value before any <option> matches it, which silently
+      // becomes "" -- the shared link would render unfiltered while its URL
+      // still claimed a filter.
+      await loadFilterValues(pFilterDim.value);
+      const pFilterVal = document.getElementById("pFilterVal");
+      pFilterVal.value = pick(pFilterVal, saved.filterVal, "all");
+
       await run();
     } catch (err) {
       status.textContent = `Could not load the query engine: ${err.message}`;

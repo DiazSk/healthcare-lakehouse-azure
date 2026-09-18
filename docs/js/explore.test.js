@@ -146,6 +146,7 @@ function loadWithDom() {
         query: () => new Promise((resolve) => resolvers.push(resolve)),
       },
       format: { money: (v) => String(v), count: (v) => String(v), pct: (v) => String(v) },
+      permalink: { read: () => ({}), write: () => {} },
       charts: {
         readTokens: () => {}, tokens: () => ({ s1: "x" }),
         axisOpts: () => ({}), legendOpts: () => ({}), tooltipOpts: () => ({}),
