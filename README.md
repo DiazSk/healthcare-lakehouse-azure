@@ -4,7 +4,8 @@
 
 ### ⟶ **[Open the live dashboard](https://diazsk.github.io/healthcare-lakehouse-azure/)** · **[Query the data yourself](https://diazsk.github.io/healthcare-lakehouse-azure/explore.html)**
 
-`PySpark` · `Delta Lake` · `Azure Databricks` · `ADLS Gen2` · `Terraform` · `DuckDB-WASM` · `Power BI` · `Python 3.11`
+**Pipeline** `PySpark 3.5` · `Delta Lake` · `Azure Databricks` · `ADLS Gen2` · `Azure Data Factory` · `Key Vault` · `Microsoft Entra ID` · `Terraform` · `Python 3.11` · `SQL` · `Parquet`<br>
+**Serving** `DuckDB` · `DuckDB-WASM` · `WebAssembly` · `Chart.js` · `Power BI` · `marimo` · `Plotly`
 
 |  |  |
 |---|---|
