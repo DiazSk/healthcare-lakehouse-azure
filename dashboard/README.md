@@ -77,11 +77,11 @@ diverge; `docs/index.html` is the one tuned for accessibility.
 
 ## A caveat on framing
 
-The chart *framing* in this app predates the analysis. Two of the five original hypotheses
-were refuted once the real numbers came in, and the published dashboard in `docs/` reports
-them as refuted — with minimum-cohort thresholds and the professional-fee-only caveat.
-This marimo app still presents the original directional framing (a slope chart implying a
-non-participating premium, a "savings" KPI for site-of-service).
+The chart *framing* in this marimo app predates the analysis, and unlike
+`docs/index.html` it has not been brought in line. Two of the five original
+hypotheses were refuted once the real numbers came in; the published dashboard
+reports them as refuted, with minimum-cohort thresholds and the professional-fee-only
+caveat. This app still presents the original directional framing.
 
 **Treat `docs/index.html` as the correct interpretation.** See the findings table in the
 [root README](../README.md#what-the-data-actually-showed).

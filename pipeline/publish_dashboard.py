@@ -17,6 +17,7 @@ Usage:  python pipeline/publish_dashboard.py
 import json
 import math
 import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -341,6 +342,25 @@ def main() -> int:
     if kb > 400:
         print(f"\nWARNING: {kb:.0f} KB exceeds the 400 KB budget.")
     inject_into_index(payload)
+
+    # Keep the two surfaces in lockstep: the static payload and the Parquet cubes
+    # are generated from the same Gold layer in one command, so they cannot drift.
+    print("\nBuilding the explorer Parquet surface…")
+    build = subprocess.run(
+        [sys.executable, str(REPO / "pipeline" / "build_explorer_data.py")]
+    )
+    if build.returncode != 0:
+        print(f"FAIL: build_explorer_data.py exited {build.returncode}")
+        return 1
+
+    print("\nVerifying explorer/payload parity…")
+    verify = subprocess.run(
+        [sys.executable, str(REPO / "pipeline" / "verify_explorer_parity.py")]
+    )
+    if verify.returncode != 0:
+        print(f"FAIL: verify_explorer_parity.py exited {verify.returncode}")
+        return 1
+
     return 0
 
 

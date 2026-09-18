@@ -305,10 +305,15 @@ on the static payload with all 8 charts intact. The `eh` (single-threaded) DuckD
 mandatory here: GitHub Pages cannot set COOP/COEP headers, so `SharedArrayBuffer` is
 unavailable and the multithreaded build cannot initialise.
 
-> **If you re-run the pipeline:** `publish_dashboard.py` and `build_explorer_data.py` are
-> separate steps and are *not* chained. Running only the first leaves `docs/data/*.parquet`
-> describing an older Gold layer than the inlined payload, so the static and live numbers
-> would silently disagree. Always run both, then `verify_explorer_parity.py`.
+**A second page for open-ended queries.** `docs/index.html` answers five fixed questions;
+[`explore.html`](docs/explore.html) is for everything else. Its pivot builder lets a visitor
+pick any row/column/measure/filter combination over the full cube — grains nobody
+anticipated at build time — while its SQL box runs arbitrary `SELECT`/`WITH` queries
+directly against `cube_full` and `providers`, guarded to read-only and capped at 5,000 rows.
+Filter and pivot state round-trips through the URL hash (`permalink.js`), so a specific
+slice can be bookmarked or shared; the SQL box's own text is deliberately left out of that
+state, since a URL is untrusted input and the box accepts external-URL table functions like
+`read_csv('https://...')`.
 
 ---
 
@@ -327,7 +332,10 @@ healthcare-lakehouse-azure/
 ├── pipeline/                      # Local reproduction harness (no Azure)
 │   ├── download.sh                # Fetch + byte-verify the CMS source
 │   ├── run_local.py               # Execute the notebook chain in one JVM
-│   ├── publish_dashboard.py       # Gold → docs/data.json + inject into index.html
+│   ├── publish_dashboard.py       # Gold → docs/data.json + index.html, chained into
+│   │                              #   build_explorer_data.py + verify_explorer_parity.py
+│   ├── build_explorer_data.py     # Gold → docs/data/*.parquet (tiered query surface)
+│   ├── verify_explorer_parity.py  # 10 assertions: live SQL == published payload
 │   ├── export_powerbi.py          # Gold → powerbi/data/*.parquet
 │   └── RUN_LOG.md                 # Transcript of real runs (row counts, DQ, timings)
 │
@@ -392,14 +400,15 @@ uv pip install --python .venv-local/bin/python -r requirements-local.txt
 .venv-local/bin/python pipeline/run_local.py            # ~4 minutes
 .venv-local/bin/python pipeline/run_local.py --sample   # or 1,000 rows first
 
-# 4. Rebuild the dashboard payload from the Gold layer
+# 4. Rebuild the dashboard from the Gold layer. One command: it writes the static
+#    payload, then chains into building the Parquet cubes and verifying the two
+#    surfaces agree (~95s longer than just the payload) -- so they cannot drift apart.
+#    NOTE: pyarrow's Parquet output isn't byte-stable, so this will leave most of
+#    docs/data/*.parquet showing as modified even when the data hasn't changed --
+#    only commit them if the Gold layer actually did.
 .venv-local/bin/python pipeline/publish_dashboard.py
 
-# 5. Rebuild the interactive query surface, then prove it matches the payload
-.venv-local/bin/python pipeline/build_explorer_data.py      # ~95s -> docs/data/*.parquet
-.venv-local/bin/python pipeline/verify_explorer_parity.py   # 10 assertions, must PASS
-
-# 6. View it
+# 5. View it
 open docs/index.html          # narrative renders offline; interaction needs a server
 python3 -m http.server -d docs 8000   # then open http://localhost:8000
 ```
@@ -545,7 +554,7 @@ No secret has ever been committed to this repository — verified across full hi
 .venv-local/bin/python pipeline/run_local.py --sample    # 1,000-row dry run
 .venv-local/bin/python pipeline/run_local.py             # full chain, ~4 min
 .venv-local/bin/python pipeline/run_local.py 99          # re-run DQ checks only
-.venv-local/bin/python pipeline/publish_dashboard.py     # rebuild docs/data.json
+.venv-local/bin/python pipeline/publish_dashboard.py     # rebuild docs/data.json + docs/data/*.parquet (chained)
 .venv-local/bin/python pipeline/export_powerbi.py        # rebuild powerbi/data/
 
 # Dashboards

@@ -1,6 +1,6 @@
 {
   "builder": "pipeline/build_explorer_data.py",
-  "builder_sha256": "48385a30f29cdd76456956662a5bdc3e0756f3f488ae97dbe375cfd9f70bf70f",
+  "builder_sha256": "cd95d8ad0d2e5cb9d6bf9dcb6502b34c933e4100664f8025fdb32e083abdadf6",
   "artifacts": [
     "cohorts",
     "cube_code",

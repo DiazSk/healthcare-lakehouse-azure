@@ -374,6 +374,15 @@ def main() -> int:
         generated = json.loads(payload.read_text()).get("meta", {}).get("generated")
     manifest = write_manifest(OUT_DIR, artifacts, generated)
     print(f"Manifest {manifest.relative_to(REPO)} -- builder {builder_sha256()[:12]}")
+    # ponytail: pyarrow's Parquet output isn't byte-stable run to run (row-group/
+    # metadata layout varies even when the data doesn't), so `git status` will show
+    # most of these ~61 MB files as modified after every rebuild. Only commit them
+    # if the Gold layer actually changed -- `git checkout -- docs/data/` otherwise.
+    # Upgrade path if reproducible artifacts ever matter: pin pyarrow's writer to a
+    # deterministic row-group size and sort order.
+    print("NOTE: docs/data/*.parquet will show as modified even when the data is "
+          "unchanged -- pyarrow's Parquet output isn't byte-stable run to run. "
+          "Only commit these files if the Gold layer actually changed.")
     return 0
 
 
